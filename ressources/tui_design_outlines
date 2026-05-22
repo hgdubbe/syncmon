@@ -1,0 +1,13 @@
+The design philosophy of this TUI emphasizes high-density, modular data visualization by leveraging advanced Unicode characters and true-color gradients within a strictly dark-themed terminal environment. It is engineered to maximize the use of limited screen real estate while maintaining distinct visual hierarchies for complex metrics.
+
+Layout and Composition
+Implement a grid-based, multi-pane architecture where each distinct functional area is encapsulated within thin Unicode box-drawing borders. Embed pane titles and contextual toggles directly into the top border lines to save vertical space. Ensure the layout is highly modular, allowing panes to be rearranged into different geometric configurations while maintaining tight alignment.
+
+Typography and Symbology
+Utilize standard monospace text for tabular data, ensuring strict columnar alignment for readability across large lists. Employ Unicode Braille patterns (U+2800 to U+28FF) for time-series graphs to achieve a pseudo-high-resolution 2x4 sub-pixel grid per character cell. Use solid Unicode block elements for horizontal meters and progress bars to create solid visual weight, avoiding standard ASCII characters like hashes or dashes.
+
+Color Theory and Semantics
+Anchor the application with a solid black background to ensure high contrast for foreground elements. Apply dynamic, multi-stop color gradients to graphs and bars to visually encode state or intensity, such as transitioning from green for low usage to red for high load. Assign specific, highly saturated accent colors to distinct data categories (e.g., magenta for memory, cyan for network) and use them consistently across all related panes.
+
+Interaction and Data Density
+Maximize data density by eliminating internal padding within panes, using color and alignment as the primary separators instead of whitespace. Indicate active selections or focus states using high-contrast background inversion or distinct highlight colors on the active row. Display subtle, minimal keyboard shortcut hints and interaction indicators within the pane borders to guide users without cluttering the display.

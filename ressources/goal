@@ -1,0 +1,45 @@
+# Role & Objective
+Act as an expert Linux System Administrator and Bash Developer. Your task is to develop "SyncMon", a lightweight, resource-efficient monitoring solution for a High-Availability (HA) database stack. The stack consists of 2 synchronized MariaDB instances and 2 synchronized Redis instances.
+
+# Project Summary
+SyncMon must run continuously in the background to monitor connectivity and synchronization status. It must include a Terminal User Interface (TUI) to visualize the real-time status of the cluster. The system must be strictly written in Bash and utilize a provided configuration file and reference script for the core checking logic.
+
+# Architecture & Design
+To ensure the TUI does not freeze during network timeouts, the project must be split into two decoupled components communicating via a temporary state file (e.g., `/tmp/syncmon_state.env` or JSON):
+1. **syncmon-daemon**: A background worker that continuously polls the databases, executes the check functions, and writes the results to the state file.
+2. **syncmon-tui**: A frontend TUI script that reads the state file and renders a clean, auto-updating dashboard using standard Bash capabilities (e.g., ANSI escape codes, `tput`, or `watch`).
+
+# File Structure
+keep it simple, no redundant files!
+
+# Component Specifications
+
+## 1. The Background Daemon (`syncmon-daemon`)
+- Inspired by `syncmon.conf` and `reference_checks.sh`.
+- Must run in an infinite `while` loop with a configurable `sleep` interval to conserve CPU resources.
+- Must execute the reference functions with a strict `timeout` wrapper to prevent hanging on unreachable nodes.
+
+## 2. The Terminal User Interface (`syncmon-tui`)
+- Must render a clean, structured dashboard in the terminal.
+- Must read the latest `/tmp/syncmon_state.env` file.
+- Should use color coding (Green = OK/Synced, Red = Error/Desynced, Yellow = Warning).
+- Must automatically refresh every X seconds without flickering (use `tput cup 0 0` or clear screen smartly).
+- Must include a clean exit trap (catch `SIGINT`/Ctrl+C to restore terminal state).
+
+## 3. Technical Constraints & Best Practices
+- Strict POSIX/Bash compliance. Avoid heavy external dependencies (no Python, no Node.js). Use Standard Bash commands and syntax.
+- IF implementing dependencies, make sure they are installed automatically
+- High resource efficiency.
+- Error Handling: Fail gracefully if config file is missing or databases are unreachable.
+
+# Provided Context
+Below are the reference files you must use to build the daemon and TUI.
+
+### [FILE: reference]
+an old script with proven-to-work checks for availability and sync
+
+### [FILE: syncmon.conf]
+the config file for the reference-file
+
+### [FILE: tui_design_outlines]
+design outlines for modern, stylish, professional terminal ui
