@@ -355,21 +355,38 @@ void format_shortened_left(char *buf, size_t buf_sz, const char* prefix, const c
     }
 }
 
+/*
+ * draw_placeholder_panel: renders a generic info panel for components
+ * that do not yet have a live data source.
+ * Shows: Host, Reachability, Function  -- all as "N/A (not yet configured)"
+ */
+void draw_placeholder_panel(int x, int y, int w, int h, const char* title, Theme* th) {
+    draw_box(x, y, w, h, th->box2, title, th);
+    tb_print_custom(x+2, y+1, th->fg,      th->bg, "Host        :");
+    tb_print_custom(x+16, y+1, th->skip,   th->bg, "N/A (not yet configured)");
+    tb_print_custom(x+2, y+2, th->fg,      th->bg, "Reachability:");
+    tb_print_custom(x+16, y+2, th->skip,   th->bg, "N/A");
+    draw_status_bar(x+20, y+2, "N/A", th);
+    tb_print_custom(x+2, y+3, th->fg,      th->bg, "Function    :");
+    tb_print_custom(x+16, y+3, th->skip,   th->bg, "N/A (not yet configured)");
+}
+
 void draw_ui(int anim_tick) {
     Theme *th = &themes[current_theme];
     tb_set_clear_attrs(th->fg, th->bg);
     tb_clear();
 
-    int w = tb_width();
-    int bw = config.dash_w + 2;
-    int bx = (w - bw) / 2;
+    int w    = tb_width();
+    int bw   = config.dash_w + 2;   /* total dashboard width */
+    int bx   = (w - bw) / 2;
     if (bx < 0) bx = 0;
-    int y = 1;
 
     const char* spinner[] = {"⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"};
-
-    draw_box(bx, y, bw, 6, th->box1, "SyncMon", th);
     char buf[1024];
+
+    /* ---- Row 0: Overview (full width, 6 lines) ---- */
+    int y = 1;
+    draw_box(bx, y, bw, 6, th->box1, "Overview", th);
     tb_print_custom(bx+2, y+1, th->accent, th->bg, "MariaDB + Redis cluster monitor");
     snprintf(buf, sizeof(buf), "Refresh: %ds  Updated: %s  ", config.display_refresh, state.timestamp);
     tb_print_custom(bx+bw-4-(int)strlen(buf), y+1, th->fg, th->bg, buf);
@@ -379,7 +396,7 @@ void draw_ui(int anim_tick) {
     draw_status_token(bx+12, y+2, state.overall_status, th);
 
     snprintf(buf, sizeof(buf), "%s -> %s", state.m_m_ep, state.m_s_ep);
-    tb_print_custom(bx+2, y+3, th->highlight, th->bg, "MySQL  :");
+    tb_print_custom(bx+2, y+3, th->highlight, th->bg, "MariaDB:");
     tb_print_custom(bx+11, y+3, th->fg, th->bg, buf);
     draw_status_bar(bx+bw-35, y+3, state.m_m_status, th);
     draw_status_bar(bx+bw-24, y+3, state.m_s_status, th);
@@ -392,61 +409,77 @@ void draw_ui(int anim_tick) {
     draw_status_bar(bx+bw-24, y+4, state.r_s_status, th);
     draw_status_bar(bx+bw-13, y+4, state.r_sync, th);
 
+    /* ---- Row 1: Loadbalancer (left ~66%) + DNS (right ~33%), height 6 ---- */
     y += 7;
-    draw_box(bx, y, bw, 7, th->box2, "MySQL Health / Info", th);
-    tb_print_custom(bx+2, y+1, th->fg, th->bg, "Master status :");
-    draw_status_token(bx+18, y+1, state.m_m_status, th); draw_status_bar(bx+28, y+1, state.m_m_status, th);
-    snprintf(buf, sizeof(buf), "Master host : %s", state.m_m_ep);
-    tb_print_custom(bx+config.panel_l+3, y+1, th->fg, th->bg, buf);
+    int lb_w  = (bw * 2) / 3;
+    int dns_w = bw - lb_w;
+    draw_placeholder_panel(bx,        y, lb_w,  6, "Loadbalancer", th);
+    draw_placeholder_panel(bx+lb_w,   y, dns_w, 6, "DNS",          th);
 
-    tb_print_custom(bx+2, y+2, th->fg, th->bg, "Slave status  :");
-    draw_status_token(bx+18, y+2, state.m_s_status, th); draw_status_bar(bx+28, y+2, state.m_s_status, th);
-    snprintf(buf, sizeof(buf), "Slave host  : %s", state.m_s_ep);
-    tb_print_custom(bx+config.panel_l+3, y+2, th->fg, th->bg, buf);
+    /* ---- Row 2: Nextcloud 1 (left half) + Nextcloud 2 (right half), height 6 ---- */
+    y += 7;
+    int nc_w = bw / 2;
+    int nc2_w = bw - nc_w;
+    draw_placeholder_panel(bx,       y, nc_w,  6, "Nextcloud 1", th);
+    draw_placeholder_panel(bx+nc_w,  y, nc2_w, 6, "Nextcloud 2", th);
 
-    tb_print_custom(bx+2, y+3, th->fg, th->bg, "Sync status   :");
-    draw_status_token(bx+18, y+3, state.m_sync, th); draw_status_bar(bx+28, y+3, state.m_sync, th);
-    int right_max = bw - config.panel_l - 4;
-    format_shortened_left(buf, sizeof(buf), "Master GTID : ", state.m_m_gtid, right_max);
-    tb_print_custom(bx+config.panel_l+3, y+3, th->fg, th->bg, buf);
+    /* ---- Row 3: NFS (left ~33%) + MariaDB (middle ~33%) + Redis (right ~33%) ---- */
+    y += 7;
+    int third   = bw / 3;
+    int third2  = bw / 3;
+    int third3  = bw - third - third2;   /* absorbs rounding */
 
-    snprintf(buf, sizeof(buf), "Last checked  : %s", state.m_chk);
-    tb_print_custom(bx+2, y+4, th->fg, th->bg, buf);
-    format_shortened_left(buf, sizeof(buf), "Slave GTID  : ", state.m_s_gtid, right_max);
-    tb_print_custom(bx+config.panel_l+3, y+4, th->fg, th->bg, buf);
+    /* NFS placeholder */
+    draw_placeholder_panel(bx, y, third, 6, "NFS", th);
 
-    tb_print_custom(bx+2, y+5, th->fg, th->bg, "Sync History  :");
-    draw_graph(bx+18, y+5, hist_mysql, hist_idx, bw-18-2, th);
+    /* MariaDB Health (full data) */
+    int mx = bx + third;
+    draw_box(mx, y, third2, 9, th->box2, "MariaDB", th);
+    tb_print_custom(mx+2, y+1, th->fg, th->bg, "Master status :");
+    draw_status_token(mx+18, y+1, state.m_m_status, th); draw_status_bar(mx+28, y+1, state.m_m_status, th);
+    snprintf(buf, sizeof(buf), "Host: %s", state.m_m_ep);
+    tb_print_custom(mx+2, y+2, th->fg, th->bg, buf);
+    tb_print_custom(mx+2, y+3, th->fg, th->bg, "Slave status  :");
+    draw_status_token(mx+18, y+3, state.m_s_status, th); draw_status_bar(mx+28, y+3, state.m_s_status, th);
+    snprintf(buf, sizeof(buf), "Host: %s", state.m_s_ep);
+    tb_print_custom(mx+2, y+4, th->fg, th->bg, buf);
+    tb_print_custom(mx+2, y+5, th->fg, th->bg, "Sync status   :");
+    draw_status_token(mx+18, y+5, state.m_sync, th); draw_status_bar(mx+28, y+5, state.m_sync, th);
+    int gtid_max = third2 - 4;
+    format_shortened_left(buf, sizeof(buf), "M-GTID: ", state.m_m_gtid, gtid_max);
+    tb_print_custom(mx+2, y+6, th->fg, th->bg, buf);
+    format_shortened_left(buf, sizeof(buf), "S-GTID: ", state.m_s_gtid, gtid_max);
+    tb_print_custom(mx+2, y+7, th->fg, th->bg, buf);
 
-    y += 8;
-    draw_box(bx, y, bw, 7, th->box2, "Redis Health / Info", th);
-    tb_print_custom(bx+2, y+1, th->fg, th->bg, "Master status :");
-    draw_status_token(bx+18, y+1, state.r_m_status, th); draw_status_bar(bx+28, y+1, state.r_m_status, th);
-    snprintf(buf, sizeof(buf), "Master host : %s", state.r_m_ep);
-    tb_print_custom(bx+config.panel_l+3, y+1, th->fg, th->bg, buf);
+    /* Redis Health (full data) */
+    int rx = bx + third + third2;
+    draw_box(rx, y, third3, 9, th->box2, "Redis", th);
+    tb_print_custom(rx+2, y+1, th->fg, th->bg, "Master status :");
+    draw_status_token(rx+18, y+1, state.r_m_status, th); draw_status_bar(rx+28, y+1, state.r_m_status, th);
+    snprintf(buf, sizeof(buf), "Host: %s", state.r_m_ep);
+    tb_print_custom(rx+2, y+2, th->fg, th->bg, buf);
+    tb_print_custom(rx+2, y+3, th->fg, th->bg, "Slave status  :");
+    draw_status_token(rx+18, y+3, state.r_s_status, th); draw_status_bar(rx+28, y+3, state.r_s_status, th);
+    snprintf(buf, sizeof(buf), "Host: %s", state.r_s_ep);
+    tb_print_custom(rx+2, y+4, th->fg, th->bg, buf);
+    tb_print_custom(rx+2, y+5, th->fg, th->bg, "Replication   :");
+    draw_status_token(rx+18, y+5, state.r_sync, th); draw_status_bar(rx+28, y+5, state.r_sync, th);
+    snprintf(buf, sizeof(buf), "Detail: %s", state.r_det);
+    tb_print_fixed(rx+2, y+6, th->fg, th->bg, buf, third3-4);
+    snprintf(buf, sizeof(buf), "Checked: %s", state.r_chk);
+    tb_print_fixed(rx+2, y+7, th->fg, th->bg, buf, third3-4);
 
-    tb_print_custom(bx+2, y+2, th->fg, th->bg, "Slave status  :");
-    draw_status_token(bx+18, y+2, state.r_s_status, th); draw_status_bar(bx+28, y+2, state.r_s_status, th);
-    snprintf(buf, sizeof(buf), "Slave host  : %s", state.r_s_ep);
-    tb_print_custom(bx+config.panel_l+3, y+2, th->fg, th->bg, buf);
-
-    tb_print_custom(bx+2, y+3, th->fg, th->bg, "Replication   :");
-    draw_status_token(bx+18, y+3, state.r_sync, th); draw_status_bar(bx+28, y+3, state.r_sync, th);
-
-    snprintf(buf, sizeof(buf), "Last checked  : %s", state.r_chk);
-    tb_print_custom(bx+2, y+4, th->fg, th->bg, buf);
-    snprintf(buf, sizeof(buf), "Detail      : %s", state.r_det);
-    tb_print_custom(bx+config.panel_l+3, y+4, th->fg, th->bg, buf);
-
-    tb_print_custom(bx+2, y+5, th->fg, th->bg, "Sync History  :");
-    draw_graph(bx+18, y+5, hist_redis, hist_idx, bw-18-2, th);
-
-    y += 8;
-    draw_box(bx, y, bw, 3, th->box1, "Details", th);
+    /* ---- Footer: history graphs + message ---- */
+    y += 10;
+    draw_box(bx, y, bw, 5, th->box1, "History / Details", th);
+    tb_print_custom(bx+2, y+1, th->highlight, th->bg, "MariaDB sync :");
+    draw_graph(bx+16, y+1, hist_mysql, hist_idx, bw-18-2, th);
+    tb_print_custom(bx+2, y+2, th->highlight, th->bg, "Redis  repl  :");
+    draw_graph(bx+16, y+2, hist_redis, hist_idx, bw-18-2, th);
     snprintf(buf, sizeof(buf), "Message : %s", state.message);
-    tb_print_custom(bx+2, y+1, th->fg, th->bg, buf);
+    tb_print_custom(bx+2, y+3, th->fg, th->bg, buf);
 
-    tb_print_custom(bx, y+4, th->fg, th->bg, "Press 'q' quit | 't' themes | 'g' graph style");
+    tb_print_custom(bx, y+6, th->fg, th->bg, "Press 'q' quit | 't' themes | 'g' graph style");
 
     draw_theme_menu(th);
     tb_present();
