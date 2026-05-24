@@ -1,0 +1,16 @@
+[Unit]
+Description=SyncMon Daemon - MariaDB/Redis Replication Monitor
+After=network.target
+Documentation=https://github.com/hgdubbe/syncmon
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/syncmon-daemon
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=syncmon-daemon
+
+[Install]
+WantedBy=multi-user.target

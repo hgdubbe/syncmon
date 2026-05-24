@@ -2,119 +2,189 @@
 
 **SyncMon** is a lightweight, high-performance monitoring suite for MariaDB/MySQL and Redis replication clusters. It consists of two components that work together:
 
-- **`syncmon-daemon`** — A background service written in C that continuously polls your database and cache nodes, writing real-time replication state to a shared environment file.
+- **`syncmon-daemon`** — A background C service that continuously polls your database and cache nodes, writing real-time replication state to a shared environment file.
 - **`syncmon`** — A terminal dashboard (TUI) written in C using `termbox2` that reads the state file and renders live replication health, GTID positions, and historical sparklines directly in your terminal.
 
-
-
---- 
+---
 
 ## Features
 
 ### Dashboard (syncmon)
 - **Real-Time Monitoring**: Tracks MariaDB master/slave status, GTIDs, and Redis replication state.
 - **Historical Sparklines**: Visualizes the last 5+ minutes of sync history using Braille or block characters.
-- **High-Visibility Alerts**: Errors immediately stand out as high-contrast inverted `X` blocks in the timeline.
+- **High-Visibility Alerts**: Errors appear as high-contrast inverted `X` blocks in the timeline.
 - **Multiple Themes**: 9 built-in color schemes — Default, Monokai, Dracula, Nord, Gruvbox, Cyberpunk, Calm, White Paper, Grayscale.
-- **Test Mode**: Built-in `--test` flag to simulate live data without a database connection.
+- **Test Mode**: `--test` flag simulates live data without a database connection.
+- **CLI Arguments**: Refresh interval and state file path can be set at launch without any config file.
 
 ### Daemon (syncmon-daemon)
-- **Zero External Dependencies**: Statically compiled binary
+- **Zero External Dependencies**: Statically compiled binary.
 - **Universal Compatibility**: Uses standard POSIX C and delegates queries to existing `mysql` and `redis-cli` binaries.
-- **Real-Time State Output**: Continuously writes replication lag, GTID positions, and node statuses to the state file.
+- **System Paths**: Config in `/etc/syncmon.d/config.conf`; logs and state in `/var/log/syncmon/`.
 - **Built-In Log Rotation**: Automatically manages log files based on configurable size thresholds.
 - **Simulation Mode**: `--test` flag generates mock data without requiring live databases.
 
 ---
 
-## Installation
+## Quick Install
 
-Both components share the same repository and configuration directory.
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/hgdubbe/syncmon/main/install.sh)"
+```
+
+The installer will:
+1. Clone the repository.
+2. Check for `mysql` and `redis-cli` in `$PATH`.
+3. Optionally recompile the daemon and/or TUI from source.
+4. Install `syncmon-daemon` and `syncmon` to `/usr/bin/`.
+5. Install the config template to `/etc/syncmon.d/config.conf`.
+6. Register and optionally start/enable a `systemd` service.
+
+---
+
+## Manual Installation
 
 ### Prerequisites
-- GCC compiler
-- `mysql` and `redis-cli` binaries available in `$PATH` (required by the daemon)
-- [`termbox2`](https://github.com/termbox/termbox2) single-header library (required by the TUI)
+
+- GCC compiler (`build-essential`)
+- `mysql` / `mariadb-client` and `redis-tools` available in `$PATH`
+- [`termbox2`](https://github.com/termbox/termbox2) single-header library (bundled in repo)
 
 ### Build
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/syncmon.git
-   cd syncmon
-   ```
+```bash
+git clone https://github.com/hgdubbe/syncmon.git
+cd syncmon
 
-2. Download `termbox2` (if not already included):
-   ```bash
-   wget https://raw.githubusercontent.com/termbox/termbox2/master/termbox2.h
-   ```
+# Compile the daemon (static)
+gcc -O3 -Wall -static syncmon-daemon.c -o syncmon-daemon
 
-3. Compile the TUI dashboard:
-   ```bash
-   gcc -O2 -march=x86-64 -o syncmon syncmon.c
-   ```
+# Compile the TUI
+gcc -O2 -march=x86-64 syncmon.c -o syncmon
+```
 
-4. Compile the daemon:
-   ```bash
-   gcc -O3 -Wall -static syncmon-daemon.c -o syncmon-daemon
-   ```
+### Install
+
+```bash
+sudo install -m 0755 syncmon-daemon /usr/bin/syncmon-daemon
+sudo install -m 0755 syncmon        /usr/bin/syncmon
+
+sudo mkdir -p /etc/syncmon.d /var/log/syncmon
+sudo install -m 0640 ressources/syncmon.conf /etc/syncmon.d/config.conf
+
+# Edit config before starting the daemon
+sudo nano /etc/syncmon.d/config.conf
+
+# Install and start the systemd service
+sudo install -m 0644 syncmon-daemon.service /etc/systemd/system/syncmon-daemon.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now syncmon-daemon
+```
 
 ---
 
 ## Configuration
 
-Both components share a single configuration file located at `./ressources/syncmon.conf` relative to each executable.
+The daemon reads its configuration exclusively from `/etc/syncmon.d/config.conf`.
+The TUI requires **no** configuration file — all options are passed as command-line arguments.
 
-### Environment Variables (TUI override)
+### `/etc/syncmon.d/config.conf` (daemon)
 
-| Variable         | Description                                                        |
-|------------------|--------------------------------------------------------------------|
-| `DISPLAY_REFRESH`| Polling interval in seconds for reading the state file (default: 2)|
-| `STATE_FILE`     | Custom path to the state environment file                          |
-| `USE_BRAILLE`    | Set to `0` to disable Braille graphs by default                   |
+| Key                      | Default                                   | Description                                      |
+|--------------------------|-------------------------------------------|--------------------------------------------------|
+| `CHECK_INTERVAL`         | `30`                                      | Poll interval in seconds                         |
+| `ENABLE_MYSQL_CHECK`     | `1`                                       | Enable MySQL/MariaDB checks (`0` to disable)     |
+| `ENABLE_REDIS_CHECK`     | `1`                                       | Enable Redis checks (`0` to disable)             |
+| `STARTUP_CHECK`          | `1`                                       | Run a check immediately on daemon start          |
+| `EXIT_ON_STARTUP_FAILURE`| `0`                                       | Exit if startup check fails                      |
+| `LOG_FILE`               | `/var/log/syncmon/syncmon.log`            | Daemon log file path                             |
+| `LOG_MAX_SIZE`           | `100`                                     | Max log size in MB before rotation               |
+| `STATE_FILE`             | `/var/log/syncmon/syncmon_state.env`      | State file path (read by TUI)                    |
+| `MYSQL_MASTER_HOST`      | `127.0.0.1`                               | MySQL master host                                |
+| `MYSQL_MASTER_PORT`      | `3306`                                    | MySQL master port                                |
+| `MYSQL_SLAVE_HOST`       | `127.0.0.2`                               | MySQL slave host                                 |
+| `MYSQL_SLAVE_PORT`       | `3306`                                    | MySQL slave port                                 |
+| `MYSQL_USER`             |                                           | MySQL user for health queries                    |
+| `MYSQL_PASSWORD`         |                                           | MySQL password (leave empty if none)             |
+| `REDIS_MASTER_HOST`      | `127.0.0.1`                               | Redis master host                                |
+| `REDIS_MASTER_PORT`      | `6379`                                    | Redis master port                                |
+| `REDIS_SLAVE_HOST`       | `127.0.0.2`                               | Redis slave host                                 |
+| `REDIS_SLAVE_PORT`       | `6379`                                    | Redis slave port                                 |
+| `REDIS_PASSWORD`         |                                           | Redis password (leave empty if none)             |
 
 ---
 
 ## Usage
 
-### 1. Start the Daemon
-
-Run in the background via `systemd`, `tmux`, or `nohup`:
-```bash
-./syncmon-daemon
-```
-
-### 2. Start the TUI Dashboard
+### Service Management
 
 ```bash
-./syncmon
+service syncmon-daemon start    # start the daemon
+service syncmon-daemon stop     # stop the daemon
+service syncmon-daemon status   # show current status
+service syncmon-daemon enable   # enable on boot
+service syncmon-daemon disable  # disable on boot
 ```
 
-### Command Line Options
+Or with systemctl directly:
 
-| Argument       | Component | Description                                               |
-|----------------|-----------|-----------------------------------------------------------|
-| `--test`       | Both      | Run with simulated mock data (no live database required). |
-| `--no-braille` | TUI       | Start with classic block graphs instead of Braille.       |
-| `--help`, `-h` | Both      | Show the help message.                                    |
+```bash
+systemctl start   syncmon-daemon
+systemctl stop    syncmon-daemon
+systemctl status  syncmon-daemon
+systemctl enable  syncmon-daemon
+```
+
+### TUI Dashboard
+
+```bash
+syncmon                          # launch with defaults
+syncmon -r 5                     # refresh every 5 seconds
+syncmon -f /custom/state.env     # use a custom state file
+syncmon --test                   # run with simulated data (no daemon required)
+syncmon --no-braille             # use classic block graphs
+```
+
+### Command Line Reference
+
+| Argument              | Component | Description                                                   |
+|-----------------------|-----------|---------------------------------------------------------------|
+| `-r`, `--refresh <n>` | TUI       | Refresh interval in seconds (default: `2`)                    |
+| `-f`, `--file <path>` | TUI       | Path to the state file (default: `/var/log/syncmon/syncmon_state.env`) |
+| `--test`              | Both      | Run with simulated mock data (no live database required)      |
+| `--no-braille`        | TUI       | Start with classic block graphs instead of Braille            |
+| `--help`, `-h`        | Both      | Show the help message                                         |
 
 ### TUI Keyboard Controls
 
 | Key            | Action                                                  |
 |----------------|---------------------------------------------------------|
-| `q` / `Ctrl+C` | Quit the application                                    |
+| `q` / `Ctrl+C` | Quit                                                    |
 | `t`            | Open theme selection menu (navigate with ↑/↓ + Enter)  |
 | `g`            | Toggle graph style between Braille and classic blocks   |
 
 ---
 
+## File Locations
+
+| Path                                    | Description                        |
+|-----------------------------------------|------------------------------------|
+| `/usr/bin/syncmon-daemon`               | Daemon binary                      |
+| `/usr/bin/syncmon`                      | TUI binary                         |
+| `/etc/syncmon.d/config.conf`            | Daemon configuration               |
+| `/etc/systemd/system/syncmon-daemon.service` | systemd unit file             |
+| `/var/log/syncmon/syncmon.log`          | Daemon log (auto-rotated)          |
+| `/var/log/syncmon/syncmon_state.env`    | Live state file (daemon → TUI)     |
+
+---
+
 ## State File Reference
 
-The daemon writes to `/tmp/syncmon_state.env` (or the path set by `STATE_FILE`). This is the interface contract between the two components.
+The daemon writes to `/var/log/syncmon/syncmon_state.env`. This is the interface contract between the daemon and the TUI.
 
 ```ini
 OVERALL_STATUS="OK"
-SYNCMON_TIMESTAMP="2026-05-23 20:44:54"
+SYNCMON_TIMESTAMP="2026-05-24 09:30:00"
 SYNCMON_MESSAGE="All clusters in sync"
 
 MYSQL_MASTER_HOST="172.31.49.233"
@@ -126,7 +196,7 @@ MYSQL_SLAVE_STATUS="OK"
 MYSQL_SYNC_STATUS="OK"
 MYSQL_MASTER_GTID="4F222222-2222-2222-2222-222222222222:2576"
 MYSQL_SLAVE_GTID="4F222222-2222-2222-2222-222222222222:2576"
-MYSQL_CHECK_TIMESTAMP="2026-05-23 20:44:54"
+MYSQL_CHECK_TIMESTAMP="2026-05-24 09:30:00"
 
 REDIS_MASTER_HOST="172.31.40.234"
 REDIS_MASTER_PORT="6379"
@@ -136,7 +206,7 @@ REDIS_MASTER_STATUS="OK"
 REDIS_SLAVE_STATUS="OK"
 REDIS_REPLICATION_STATUS="OK"
 REDIS_REPLICATION_DETAIL="link=up io=9 host=172.31.181.148"
-REDIS_CHECK_TIMESTAMP="2026-05-23 20:44:54"
+REDIS_CHECK_TIMESTAMP="2026-05-24 09:30:00"
 ```
 
 ---
