@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SyncMon Installer
+# SyncMon Installer — experimental branch
 # Usage: sudo bash install.sh
 set -euo pipefail
 
@@ -14,24 +14,28 @@ ask()  { echo -e "${BLD}$*${RST}"; }
 # ── Root check ─────────────────────────────────────────────────────────────────
 [[ $EUID -eq 0 ]] || die "Please run as root: sudo bash install.sh"
 
-echo -e "\n${BLD}╔══════════════════════════════════════╗"
-echo    "║       SyncMon Installer              ║"
-echo -e "╚══════════════════════════════════════╝${RST}\n"
+echo -e "\n${YLW}${BLD}╔══════════════════════════════════════════════╗"
+echo    "║   SyncMon Installer  [experimental branch]  ║"
+echo -e "╚══════════════════════════════════════════════╝${RST}"
+warn "This installs the EXPERIMENTAL branch. It may be unstable."
+warn "For the stable release use the main branch installer."
+echo
 
 # ── 1. Download / locate repository ───────────────────────────────────────────
 REPO_URL="https://github.com/hgdubbe/syncmon"
+BRANCH="experimental"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-info "Cloning repository to $TMP_DIR ..."
-git clone --depth=1 "$REPO_URL" "$TMP_DIR/syncmon" 2>&1 | sed 's/^/  /'
-ok "Repository downloaded."
+info "Cloning branch '${BRANCH}' from ${REPO_URL} ..."
+git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$TMP_DIR/syncmon" 2>&1 | sed 's/^/  /'
+ok "Repository downloaded (branch: ${BRANCH})."
 cd "$TMP_DIR/syncmon"
 
 # ── 2. Dependency check ────────────────────────────────────────────────────────
 info "Checking dependencies ..."
 missing=()
-command -v mysql    >/dev/null 2>&1 || missing+=("mysql")
+command -v mysql     >/dev/null 2>&1 || missing+=("mysql")
 command -v redis-cli >/dev/null 2>&1 || missing+=("redis-cli")
 
 if [[ ${#missing[@]} -gt 0 ]]; then
@@ -129,7 +133,9 @@ ok "TUI installed."
 
 # ── 10. Done – usage summary ───────────────────────────────────────────────────
 echo
-echo -e "${GRN}${BLD}Installation complete!${RST}\n"
+echo -e "${GRN}${BLD}Installation complete! (experimental branch)${RST}\n"
+warn "Remember: this is an experimental build. Some dashboard panels show placeholder data."
+echo
 echo -e "${BLD}Service management:${RST}"
 echo    "  service syncmon-daemon start    # start the daemon"
 echo    "  service syncmon-daemon stop     # stop the daemon"
@@ -144,7 +150,7 @@ echo    "  syncmon -f /custom/state.env    # use a custom state file"
 echo    "  syncmon --test                  # launch with simulated data"
 echo
 echo -e "${BLD}Configuration:${RST}"
-echo    "  /etc/syncmon.d/config.conf      # daemon config (hosts, ports, credentials)"
-echo    "  /var/log/syncmon/syncmon.log    # daemon log"
+echo    "  /etc/syncmon.d/config.conf          # daemon config (hosts, ports, credentials)"
+echo    "  /var/log/syncmon/syncmon.log        # daemon log"
 echo    "  /var/log/syncmon/syncmon_state.env  # live state file (read by TUI)"
 echo

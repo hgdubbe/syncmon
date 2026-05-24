@@ -1,15 +1,58 @@
-# SyncMon Monitoring Suite
+# SyncMon Monitoring Suite — Experimental Branch
 
-**SyncMon** is a lightweight, high-performance monitoring suite for MariaDB/MySQL and Redis replication clusters. It consists of two components that work together:
+> **⚠️ You are on the `experimental` branch.**
+> This branch contains active development work and may be unstable.
+> For the stable release, switch to the [`main`](https://github.com/hgdubbe/syncmon/tree/main) branch.
+
+**SyncMon** is a lightweight, high-performance monitoring suite for a Nextcloud high-availability stack. It monitors MariaDB/MySQL and Redis replication clusters and provides a full-stack TUI dashboard covering all infrastructure components.
+
+It consists of two components that work together:
 
 - **`syncmon-daemon`** — A background C service that continuously polls your database and cache nodes, writing real-time replication state to a shared environment file.
-- **`syncmon`** — A terminal dashboard (TUI) written in C using `termbox2` that reads the state file and renders live replication health, GTID positions, and historical sparklines directly in your terminal.
+- **`syncmon`** — A terminal dashboard (TUI) written in C using `termbox2` that reads the state file and renders a live grid layout covering the entire stack.
+
+---
+
+## What's New in `experimental`
+
+### Grid Layout Dashboard
+
+The TUI has been redesigned from a single-stack view into a **multi-panel grid layout** that maps to the full Nextcloud HA infrastructure:
+
+```
+┌─────────────────────────────────────────────────────┐
+│                      Overview                       │
+├──────────────────────────────────┬──────────────────┤
+│           Loadbalancer           │       DNS        │
+├──────────────────────┬───────────┴──────────────────┤
+│     Nextcloud 1      │         Nextcloud 2           │
+├──────────┬───────────┴────────────┬─────────────────┤
+│   NFS    │        MariaDB         │      Redis       │
+├──────────┴────────────────────────┴─────────────────┤
+│                 History / Details                   │
+└─────────────────────────────────────────────────────┘
+```
+
+| Panel | Data Source | Status |
+|---|---|---|
+| Overview | Daemon state file | ✅ Live |
+| Loadbalancer | — | 🔲 Placeholder |
+| DNS | — | 🔲 Placeholder |
+| Nextcloud 1 | — | 🔲 Placeholder |
+| Nextcloud 2 | — | 🔲 Placeholder |
+| NFS | — | 🔲 Placeholder |
+| MariaDB | Daemon state file | ✅ Live |
+| Redis | Daemon state file | ✅ Live |
+| History / Details | Ring buffer | ✅ Live |
+
+Placeholder panels display `Host`, `Reachability`, and `Function` fields as `N/A (not yet configured)` in the theme's dimmed color until live data sources are wired in.
 
 ---
 
 ## Features
 
 ### Dashboard (syncmon)
+- **Grid Layout**: Full-stack view of all HA components in a single terminal screen.
 - **Real-Time Monitoring**: Tracks MariaDB master/slave status, GTIDs, and Redis replication state.
 - **Historical Sparklines**: Visualizes the last 5+ minutes of sync history using Braille or block characters.
 - **High-Visibility Alerts**: Errors appear as high-contrast inverted `X` blocks in the timeline.
@@ -26,19 +69,27 @@
 
 ---
 
-## Quick Install
+## Quick Install (Experimental)
+
+> Installs from the `experimental` branch. Do **not** use this in production.
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/hgdubbe/syncmon/main/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/hgdubbe/syncmon/experimental/install.sh)"
 ```
 
 The installer will:
-1. Clone the repository.
+1. Clone the `experimental` branch of the repository.
 2. Check for `mysql` and `redis-cli` in `$PATH`.
 3. Optionally recompile the daemon and/or TUI from source.
 4. Install `syncmon-daemon` and `syncmon` to `/usr/bin/`.
 5. Install the config template to `/etc/syncmon.d/config.conf`.
 6. Register and optionally start/enable a `systemd` service.
+
+For the stable installer, use the `main` branch:
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/hgdubbe/syncmon/main/install.sh)"
+```
 
 ---
 
@@ -53,7 +104,7 @@ The installer will:
 ### Build
 
 ```bash
-git clone https://github.com/hgdubbe/syncmon.git
+git clone --branch experimental https://github.com/hgdubbe/syncmon.git
 cd syncmon
 
 # Compile the daemon (static)
@@ -208,6 +259,17 @@ REDIS_REPLICATION_STATUS="OK"
 REDIS_REPLICATION_DETAIL="link=up io=9 host=172.31.181.148"
 REDIS_CHECK_TIMESTAMP="2026-05-24 09:30:00"
 ```
+
+---
+
+## Roadmap (experimental → main)
+
+- [ ] Live data for Loadbalancer panel (HAProxy stats socket / HTTP health endpoint)
+- [ ] Live data for DNS panel (dig/nslookup reachability probe)
+- [ ] Live data for Nextcloud 1 / 2 panels (HTTP status check)
+- [ ] Live data for NFS panel (mount reachability / `showmount` check)
+- [ ] Per-panel `env` keys in daemon and state file
+- [ ] Merge to `main` once all panels have live data
 
 ---
 
