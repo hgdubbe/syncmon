@@ -38,12 +38,16 @@ typedef struct {
     char redis_slave_port[16];
     char redis_password[256];
 
-    /* placeholder component addresses (informational, written to state) */
+    /* placeholder component addresses */
     char lb_host[256];
     char dns_host[256];
     char nc1_host[256];
     char nc2_host[256];
     char nfs_host[256];
+    /* optional URL overrides for HTTP checks */
+    char lb_check_url[512];
+    char nc1_check_url[512];
+    char nc2_check_url[512];
 } Config;
 
 void init_config(Config *cfg) {
@@ -63,12 +67,14 @@ void init_config(Config *cfg) {
     snprintf(cfg->redis_master_port, sizeof(cfg->redis_master_port), "6379");
     snprintf(cfg->redis_slave_host,  sizeof(cfg->redis_slave_host),  "127.0.0.2");
     snprintf(cfg->redis_slave_port,  sizeof(cfg->redis_slave_port),  "6379");
-    /* placeholder defaults */
     snprintf(cfg->lb_host,  sizeof(cfg->lb_host),  "not configured");
     snprintf(cfg->dns_host, sizeof(cfg->dns_host), "not configured");
     snprintf(cfg->nc1_host, sizeof(cfg->nc1_host), "not configured");
     snprintf(cfg->nc2_host, sizeof(cfg->nc2_host), "not configured");
     snprintf(cfg->nfs_host, sizeof(cfg->nfs_host), "not configured");
+    cfg->lb_check_url[0]  = '\0';
+    cfg->nc1_check_url[0] = '\0';
+    cfg->nc2_check_url[0] = '\0';
 }
 
 void trim_newline(char *str) { str[strcspn(str, "\r\n")] = 0; }
@@ -119,12 +125,14 @@ void load_config(const char *filepath, Config *cfg) {
             else if (strcmp(key,"REDIS_SLAVE_HOST")==0)         snprintf(cfg->redis_slave_host,sizeof(cfg->redis_slave_host),"%s",val);
             else if (strcmp(key,"REDIS_SLAVE_PORT")==0)         snprintf(cfg->redis_slave_port,sizeof(cfg->redis_slave_port),"%s",val);
             else if (strcmp(key,"REDIS_PASSWORD")==0)           snprintf(cfg->redis_password,sizeof(cfg->redis_password),"%s",val);
-            /* placeholder component hosts */
             else if (strcmp(key,"LB_HOST")==0)                  snprintf(cfg->lb_host,sizeof(cfg->lb_host),"%s",val);
             else if (strcmp(key,"DNS_HOST")==0)                 snprintf(cfg->dns_host,sizeof(cfg->dns_host),"%s",val);
             else if (strcmp(key,"NC1_HOST")==0)                 snprintf(cfg->nc1_host,sizeof(cfg->nc1_host),"%s",val);
             else if (strcmp(key,"NC2_HOST")==0)                 snprintf(cfg->nc2_host,sizeof(cfg->nc2_host),"%s",val);
             else if (strcmp(key,"NFS_HOST")==0)                 snprintf(cfg->nfs_host,sizeof(cfg->nfs_host),"%s",val);
+            else if (strcmp(key,"LB_CHECK_URL")==0)             snprintf(cfg->lb_check_url,sizeof(cfg->lb_check_url),"%s",val);
+            else if (strcmp(key,"NC1_CHECK_URL")==0)            snprintf(cfg->nc1_check_url,sizeof(cfg->nc1_check_url),"%s",val);
+            else if (strcmp(key,"NC2_CHECK_URL")==0)            snprintf(cfg->nc2_check_url,sizeof(cfg->nc2_check_url),"%s",val);
         }
     }
     fclose(f);
@@ -148,272 +156,30 @@ void log_message(Config *cfg, const char *msg) {
     }
 }
 
-void write_state(const char* state_file,
-                 const char* mysql_master_host, const char* mysql_master_port,
-                 const char* mysql_slave_host,  const char* mysql_slave_port,
-                 const char* redis_master_host, const char* redis_master_port,
-                 const char* redis_slave_host,  const char* redis_slave_port,
-                 const char* status,
-                 const char* m_status,    const char* s_status,
-                 const char* sync_status, const char* m_gtid, const char* s_gtid,
-                 const char* rm_status,   const char* rs_status, const char* r_rep_status,
-                 const char* r_detail,    const char* message,
-                 const char* mysql_check_ts, const char* redis_check_ts,
-                 /* placeholder components */
-                 const char* lb_host,  const char* lb_status,  const char* lb_function,
-                 const char* dns_host, const char* dns_status, const char* dns_function,
-                 const char* nc1_host, const char* nc1_status, const char* nc1_function,
-                 const char* nc2_host, const char* nc2_status, const char* nc2_function,
-                 const char* nfs_host, const char* nfs_status, const char* nfs_function)
-{
-    char tmp_file[PATH_MAX+8];
-    snprintf(tmp_file, sizeof(tmp_file), "%s%s", state_file, TMP_STATE_SUFFIX);
-    FILE *f = fopen(tmp_file, "w"); if (!f) return;
-
-    time_t t=time(NULL); struct tm tm=*localtime(&t);
-    fprintf(f,"SYNCMON_TIMESTAMP=\"%04d-%02d-%02d %02d:%02d:%02d\"\n",
-            tm.tm_year+1900,tm.tm_mon+1,tm.tm_mday,tm.tm_hour,tm.tm_min,tm.tm_sec);
-    fprintf(f,"OVERALL_STATUS=\"%s\"\n",           status         ?status         :"UNKNOWN");
-    /* MySQL */
-    fprintf(f,"MYSQL_MASTER_HOST=\"%s\"\n",        mysql_master_host?mysql_master_host:"");
-    fprintf(f,"MYSQL_MASTER_PORT=\"%s\"\n",        mysql_master_port?mysql_master_port:"");
-    fprintf(f,"MYSQL_SLAVE_HOST=\"%s\"\n",         mysql_slave_host ?mysql_slave_host :"");
-    fprintf(f,"MYSQL_SLAVE_PORT=\"%s\"\n",         mysql_slave_port ?mysql_slave_port :"");
-    fprintf(f,"MYSQL_MASTER_STATUS=\"%s\"\n",      m_status       ?m_status       :"UNKNOWN");
-    fprintf(f,"MYSQL_SLAVE_STATUS=\"%s\"\n",       s_status       ?s_status       :"UNKNOWN");
-    fprintf(f,"MYSQL_SYNC_STATUS=\"%s\"\n",        sync_status    ?sync_status    :"UNKNOWN");
-    fprintf(f,"MYSQL_MASTER_GTID=\"%s\"\n",        m_gtid         ?m_gtid         :"");
-    fprintf(f,"MYSQL_SLAVE_GTID=\"%s\"\n",         s_gtid         ?s_gtid         :"");
-    fprintf(f,"MYSQL_CHECK_TIMESTAMP=\"%s\"\n",    mysql_check_ts ?mysql_check_ts :"unknown");
-    /* Redis */
-    fprintf(f,"REDIS_MASTER_HOST=\"%s\"\n",        redis_master_host?redis_master_host:"");
-    fprintf(f,"REDIS_MASTER_PORT=\"%s\"\n",        redis_master_port?redis_master_port:"");
-    fprintf(f,"REDIS_SLAVE_HOST=\"%s\"\n",         redis_slave_host ?redis_slave_host :"");
-    fprintf(f,"REDIS_SLAVE_PORT=\"%s\"\n",         redis_slave_port ?redis_slave_port :"");
-    fprintf(f,"REDIS_MASTER_STATUS=\"%s\"\n",      rm_status      ?rm_status      :"UNKNOWN");
-    fprintf(f,"REDIS_SLAVE_STATUS=\"%s\"\n",       rs_status      ?rs_status      :"UNKNOWN");
-    fprintf(f,"REDIS_REPLICATION_STATUS=\"%s\"\n", r_rep_status   ?r_rep_status   :"UNKNOWN");
-    fprintf(f,"REDIS_REPLICATION_DETAIL=\"%s\"\n", r_detail       ?r_detail       :"");
-    fprintf(f,"REDIS_CHECK_TIMESTAMP=\"%s\"\n",    redis_check_ts ?redis_check_ts :"unknown");
-    /* placeholder components */
-    fprintf(f,"LB_HOST=\"%s\"\n",      lb_host    ?lb_host    :"");
-    fprintf(f,"LB_STATUS=\"%s\"\n",    lb_status  ?lb_status  :"N/A");
-    fprintf(f,"LB_FUNCTION=\"%s\"\n",  lb_function?lb_function:"");
-    fprintf(f,"DNS_HOST=\"%s\"\n",     dns_host   ?dns_host   :"");
-    fprintf(f,"DNS_STATUS=\"%s\"\n",   dns_status ?dns_status :"N/A");
-    fprintf(f,"DNS_FUNCTION=\"%s\"\n", dns_function?dns_function:"");
-    fprintf(f,"NC1_HOST=\"%s\"\n",     nc1_host   ?nc1_host   :"");
-    fprintf(f,"NC1_STATUS=\"%s\"\n",   nc1_status ?nc1_status :"N/A");
-    fprintf(f,"NC1_FUNCTION=\"%s\"\n", nc1_function?nc1_function:"");
-    fprintf(f,"NC2_HOST=\"%s\"\n",     nc2_host   ?nc2_host   :"");
-    fprintf(f,"NC2_STATUS=\"%s\"\n",   nc2_status ?nc2_status :"N/A");
-    fprintf(f,"NC2_FUNCTION=\"%s\"\n", nc2_function?nc2_function:"");
-    fprintf(f,"NFS_HOST=\"%s\"\n",     nfs_host   ?nfs_host   :"");
-    fprintf(f,"NFS_STATUS=\"%s\"\n",   nfs_status ?nfs_status :"N/A");
-    fprintf(f,"NFS_FUNCTION=\"%s\"\n", nfs_function?nfs_function:"");
-    fprintf(f,"SYNCMON_MESSAGE=\"%s\"\n", message?message:"");
-    fclose(f);
-    rename(tmp_file, state_file);
-}
-
-int exec_query(const char* cmd, char* out, size_t out_size) {
-    FILE* fp = popen(cmd, "r");
-    if (!fp) return 0;
-    if (fgets(out, out_size, fp)) trim_newline(out); else out[0]='\0';
-    return pclose(fp)==0;
-}
-
-void get_mysql_gtid(const char* host,const char* port,const char* user,
-                    const char* pass,const char* var,char* out) {
-    char cmd[MAX_BUFFER], pass_opt[300]={0};
-    if (strlen(pass)>0) snprintf(pass_opt,sizeof(pass_opt),"-p'%s'",pass);
-    snprintf(cmd,sizeof(cmd),
-             "timeout 10 mysql -h %s -P %s -u %s %s -N -B -e 'SELECT @@GLOBAL.%s;' 2>/dev/null",
-             host,port,user,pass_opt,var);
-    if (!exec_query(cmd,out,256)||strlen(out)==0) {
-        snprintf(cmd,sizeof(cmd),
-                 "timeout 10 mysql -h %s -P %s -u %s %s -N -B"
-                 " -e 'SHOW GLOBAL VARIABLES LIKE \"%s\";' 2>/dev/null | awk '{print $2}'",
-                 host,port,user,pass_opt,var);
-        exec_query(cmd,out,256);
-    }
-}
-
-void run_checks(Config *cfg) {
-    char mysql_master_status[16]="UNKNOWN", mysql_slave_status[16]="UNKNOWN",
-         mysql_sync_status[16]="UNKNOWN";
-    char mysql_master_gtid[256]="", mysql_slave_gtid[256]="";
-    char redis_master_status[16]="UNKNOWN", redis_slave_status[16]="UNKNOWN",
-         redis_rep_status[16]="UNKNOWN";
-    char redis_rep_detail[256]="unknown", overall_msg[256]="";
-    char mysql_check_ts[64]="unknown", redis_check_ts[64]="unknown";
-
-    if (cfg->enable_mysql_check) {
-        char cmd[MAX_BUFFER], pass_opt[300]={0};
-        if (strlen(cfg->mysql_password)>0)
-            snprintf(pass_opt,sizeof(pass_opt),"-p'%s'",cfg->mysql_password);
-        snprintf(cmd,sizeof(cmd),
-                 "timeout 10 mysql -h %s -P %s -u %s %s -N -B -e 'SELECT 1;' 2>/dev/null",
-                 cfg->mysql_master_host,cfg->mysql_master_port,cfg->mysql_user,pass_opt);
-        int master_ok=exec_query(cmd,mysql_master_gtid,sizeof(mysql_master_gtid));
-        snprintf(cmd,sizeof(cmd),
-                 "timeout 10 mysql -h %s -P %s -u %s %s -N -B -e 'SELECT 1;' 2>/dev/null",
-                 cfg->mysql_slave_host,cfg->mysql_slave_port,cfg->mysql_user,pass_opt);
-        int slave_ok=exec_query(cmd,mysql_slave_gtid,sizeof(mysql_slave_gtid));
-        if (master_ok) {
-            strcpy(mysql_master_status,"OK");
-            get_mysql_gtid(cfg->mysql_master_host,cfg->mysql_master_port,
-                           cfg->mysql_user,cfg->mysql_password,"gtid_binlog_pos",mysql_master_gtid);
-        } else strcpy(mysql_master_status,"ERROR");
-        if (slave_ok) {
-            strcpy(mysql_slave_status,"OK");
-            get_mysql_gtid(cfg->mysql_slave_host,cfg->mysql_slave_port,
-                           cfg->mysql_user,cfg->mysql_password,"gtid_slave_pos",mysql_slave_gtid);
-        } else strcpy(mysql_slave_status,"ERROR");
-        if (master_ok&&slave_ok) {
-            strcpy(mysql_sync_status,
-                   (strlen(mysql_master_gtid)>0&&strcmp(mysql_master_gtid,mysql_slave_gtid)==0)?"OK":"WARN");
-        } else strcpy(mysql_sync_status,"ERROR");
-        time_t t=time(NULL); struct tm tm=*localtime(&t);
-        snprintf(mysql_check_ts,sizeof(mysql_check_ts),"%04d-%02d-%02d %02d:%02d:%02d",
-                 tm.tm_year+1900,tm.tm_mon+1,tm.tm_mday,tm.tm_hour,tm.tm_min,tm.tm_sec);
-    }
-
-    if (cfg->enable_redis_check) {
-        char cmd[MAX_BUFFER], out[MAX_BUFFER];
-        const char *pass=cfg->redis_password;
-        snprintf(cmd,sizeof(cmd),
-                 "redis-cli --no-auth-warning -h %s -p %s %s %s PING 2>/dev/null",
-                 cfg->redis_master_host,cfg->redis_master_port,
-                 strlen(pass)?"-a":"",strlen(pass)?pass:"");
-        int r_master_ok=exec_query(cmd,out,sizeof(out));
-        snprintf(cmd,sizeof(cmd),
-                 "redis-cli --no-auth-warning -h %s -p %s %s %s PING 2>/dev/null",
-                 cfg->redis_slave_host,cfg->redis_slave_port,
-                 strlen(pass)?"-a":"",strlen(pass)?pass:"");
-        int r_slave_ok=exec_query(cmd,out,sizeof(out));
-        strcpy(redis_master_status,r_master_ok?"OK":"ERROR");
-        strcpy(redis_slave_status, r_slave_ok ?"OK":"ERROR");
-        if (r_slave_ok) {
-            snprintf(cmd,sizeof(cmd),
-                     "redis-cli --no-auth-warning -h %s -p %s %s %s INFO replication 2>/dev/null",
-                     cfg->redis_slave_host,cfg->redis_slave_port,
-                     strlen(pass)?"-a":"",strlen(pass)?pass:"");
-            FILE* fp=popen(cmd,"r");
-            if (fp) {
-                char line[256],link[16]="?",io[16]="?",host[64]="?";
-                int rep_ok=0;
-                while (fgets(line,sizeof(line),fp)) {
-                    if      (strncmp(line,"master_link_status:",19)==0)
-                        {sscanf(line+19,"%s",link);if(strcmp(link,"up")==0)rep_ok=1;}
-                    else if (strncmp(line,"master_last_io_seconds_ago:",27)==0) sscanf(line+27,"%s",io);
-                    else if (strncmp(line,"master_host:",12)==0)               sscanf(line+12,"%s",host);
-                }
-                pclose(fp);
-                snprintf(redis_rep_detail,sizeof(redis_rep_detail),"link=%s io=%s host=%s",link,io,host);
-                strcpy(redis_rep_status,rep_ok?"OK":"WARN");
-            }
-        } else strcpy(redis_rep_status,"ERROR");
-        time_t t=time(NULL); struct tm tm=*localtime(&t);
-        snprintf(redis_check_ts,sizeof(redis_check_ts),"%04d-%02d-%02d %02d:%02d:%02d",
-                 tm.tm_year+1900,tm.tm_mon+1,tm.tm_mday,tm.tm_hour,tm.tm_min,tm.tm_sec);
-    }
-
-    char overall[16];
-    if (strcmp(mysql_master_status,"OK")==0 && strcmp(mysql_slave_status,"OK")==0 &&
-        strcmp(mysql_sync_status,  "OK")==0 &&
-        strcmp(redis_master_status,"OK")==0 && strcmp(redis_slave_status, "OK")==0 &&
-        strcmp(redis_rep_status,   "OK")==0) {
-        strcpy(overall,"OK"); strcpy(overall_msg,"All systems operational");
-    } else if (strcmp(mysql_master_status,"ERROR")==0 && strcmp(redis_master_status,"ERROR")==0) {
-        strcpy(overall,"ERROR"); strcpy(overall_msg,"Multiple master failures detected");
+/* ── ping_host: single ICMP ping, returns latency string and status ──────── */
+void ping_host(const char *host, char *status_out, char *detail_out) {
+    char cmd[512];
+    /* -c1 -W2: one packet, 2 s timeout; parse avg rtt from summary line */
+    snprintf(cmd, sizeof(cmd),
+             "ping -c1 -W2 %s 2>/dev/null"
+             " | awk '/rtt|round-trip/{split($4,a,\"/\"); printf \"%.0fms\",a[2]}'\n",
+             host);
+    FILE *fp = popen(cmd, "r");
+    char buf[64] = {0};
+    if (fp) { fgets(buf, sizeof(buf), fp); pclose(fp); }
+    buf[strcspn(buf, "\r\n")] = 0;
+    if (strlen(buf) == 0) {
+        /* no rtt output → unreachable */
+        snprintf(status_out, 16,  "ERROR");
+        snprintf(detail_out, 64,  "timeout");
     } else {
-        strcpy(overall,"WARN"); strcpy(overall_msg,"One or more components degraded");
+        int ms = atoi(buf);
+        snprintf(detail_out, 64, "%s", buf);
+        if      (ms < 100)  snprintf(status_out, 16, "OK");
+        else if (ms < 500)  snprintf(status_out, 16, "WARN");
+        else                snprintf(status_out, 16, "ERROR");
     }
-
-    /* placeholder fields: pass host from config, status/function as N/A until
-       active probing is implemented for these components */
-    write_state(cfg->state_file,
-                cfg->mysql_master_host, cfg->mysql_master_port,
-                cfg->mysql_slave_host,  cfg->mysql_slave_port,
-                cfg->redis_master_host, cfg->redis_master_port,
-                cfg->redis_slave_host,  cfg->redis_slave_port,
-                overall,
-                mysql_master_status, mysql_slave_status, mysql_sync_status,
-                mysql_master_gtid,   mysql_slave_gtid,
-                redis_master_status, redis_slave_status, redis_rep_status,
-                redis_rep_detail,    overall_msg,
-                mysql_check_ts,      redis_check_ts,
-                /* lb */  cfg->lb_host,  "N/A", "not yet monitored",
-                /* dns */ cfg->dns_host, "N/A", "not yet monitored",
-                /* nc1 */ cfg->nc1_host, "N/A", "not yet monitored",
-                /* nc2 */ cfg->nc2_host, "N/A", "not yet monitored",
-                /* nfs */ cfg->nfs_host, "N/A", "not yet monitored");
-
-    char log_buf[512];
-    snprintf(log_buf,sizeof(log_buf),"check complete: %s",overall);
-    log_message(cfg,log_buf);
 }
 
-void run_test_mode(const char* state_file) {
-    srand(time(NULL));
-    const char* statuses[]={"OK","WARN","ERROR"};
-    const char* base_gtid=(rand()%2)
-        ?"3E111111-1111-1111-1111-111111111111"
-        :"4F222222-2222-2222-2222-222222222222";
-    int mg=(rand()%10000)+1000, sg=mg;
-    if ((rand()%100)<30) sg-=(rand()%50+1);
-    char m_gtid_str[256],s_gtid_str[256],r_detail[256],ts_str[64];
-    snprintf(m_gtid_str,sizeof(m_gtid_str),"%s:%d",base_gtid,mg);
-    snprintf(s_gtid_str,sizeof(s_gtid_str),"%s:%d",base_gtid,sg);
-    const char* rep_status=statuses[rand()%3];
-    snprintf(r_detail,sizeof(r_detail),"link=%s io=%d host=172.31.%d.%d",
-             strcmp(rep_status,"ERROR")==0?"down":"up",rand()%15,rand()%255,rand()%255);
-    time_t t=time(NULL); struct tm tm=*localtime(&t);
-    snprintf(ts_str,sizeof(ts_str),"%04d-%02d-%02d %02d:%02d:%02d",
-             tm.tm_year+1900,tm.tm_mon+1,tm.tm_mday,tm.tm_hour,tm.tm_min,tm.tm_sec);
-
-    write_state(state_file,
-                "172.31.49.233","3306","172.31.40.234","3306",
-                "172.31.40.234","6379","172.31.40.233","6379",
-                statuses[rand()%3],
-                statuses[rand()%3],statuses[rand()%3],
-                mg==sg?"OK":"WARN",
-                m_gtid_str,s_gtid_str,
-                statuses[rand()%3],statuses[rand()%3],
-                rep_status,r_detail,"Live Simulation Data",
-                ts_str,ts_str,
-                /* lb  */ "172.31.0.10",  statuses[rand()%3], "HAProxy / active-passive",
-                /* dns */ "172.31.0.53",  statuses[rand()%3], "Internal resolver",
-                /* nc1 */ "172.31.1.11",  statuses[rand()%3], "Nextcloud app node 1",
-                /* nc2 */ "172.31.1.12",  statuses[rand()%3], "Nextcloud app node 2",
-                /* nfs */ "172.31.2.20",  statuses[rand()%3], "Shared data store");
-    printf("Simulated test state written to %s\n", state_file);
-    exit(0);
-}
-
-int main(int argc, char *argv[]) {
-    Config cfg; init_config(&cfg);
-    for (int i=1;i<argc;i++) {
-        if      (strcmp(argv[i],"--test")==0)  run_test_mode(cfg.state_file);
-        else if (strcmp(argv[i],"--help")==0||strcmp(argv[i],"-h")==0) {
-            printf("Usage: syncmon-daemon [--test] [--help]\n\n"
-                   "  --test    Write a sample syncmon state file and exit\n"
-                   "  --help    Show this usage message\n\n"
-                   "Config  : %s\nLog     : %s\nState   : %s\n",
-                   CONFIG_FILE_DEFAULT,LOG_FILE_DEFAULT,STATE_FILE_DEFAULT);
-            return 0;
-        } else { fprintf(stderr,"ERROR: unknown argument: %s\n",argv[i]); return 1; }
-    }
-    ensure_log_dir(cfg.log_file); ensure_log_dir(cfg.state_file);
-    load_config(CONFIG_FILE_DEFAULT,&cfg);
-    ensure_log_dir(cfg.log_file); ensure_log_dir(cfg.state_file);
-    if (cfg.startup_check) { log_message(&cfg,"Performing initial startup checks..."); run_checks(&cfg); }
-    char startup_msg[PATH_MAX+128];
-    snprintf(startup_msg,sizeof(startup_msg),
-             "SyncMon daemon starting (interval=%ds, state=%s)",
-             cfg.check_interval,cfg.state_file);
-    log_message(&cfg,startup_msg);
-    while (1) { run_checks(&cfg); sleep(cfg.check_interval); }
-    return 0;
-}
+/* ── http_check: curl GET, returns HTTP status code + body snippet ──────── */
+void http_check(const char *url, char *result_out, size_t

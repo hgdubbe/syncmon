@@ -70,15 +70,20 @@ struct {
     char r_sync[MAX_VAL];      char r_det[MAX_VAL];     char r_chk[MAX_VAL];
     char r_m_ep[MAX_VAL];      char r_s_ep[MAX_VAL];
     /* loadbalancer */
-    char lb_host[MAX_VAL];     char lb_status[MAX_VAL]; char lb_function[MAX_VAL];
+    char lb_host[MAX_VAL];     char lb_ping[MAX_VAL];   char lb_ping_status[MAX_VAL];
+    char lb_check[MAX_VAL];    char lb_chk[MAX_VAL];
     /* dns */
-    char dns_host[MAX_VAL];    char dns_status[MAX_VAL]; char dns_function[MAX_VAL];
+    char dns_host[MAX_VAL];    char dns_ping[MAX_VAL];  char dns_ping_status[MAX_VAL];
+    char dns_check[MAX_VAL];   char dns_chk[MAX_VAL];
     /* nextcloud 1 */
-    char nc1_host[MAX_VAL];    char nc1_status[MAX_VAL]; char nc1_function[MAX_VAL];
+    char nc1_host[MAX_VAL];    char nc1_ping[MAX_VAL];  char nc1_ping_status[MAX_VAL];
+    char nc1_check[MAX_VAL];   char nc1_chk[MAX_VAL];
     /* nextcloud 2 */
-    char nc2_host[MAX_VAL];    char nc2_status[MAX_VAL]; char nc2_function[MAX_VAL];
+    char nc2_host[MAX_VAL];    char nc2_ping[MAX_VAL];  char nc2_ping_status[MAX_VAL];
+    char nc2_check[MAX_VAL];   char nc2_chk[MAX_VAL];
     /* nfs */
-    char nfs_host[MAX_VAL];    char nfs_status[MAX_VAL]; char nfs_function[MAX_VAL];
+    char nfs_host[MAX_VAL];    char nfs_ping[MAX_VAL];  char nfs_ping_status[MAX_VAL];
+    char nfs_check[MAX_VAL];   char nfs_chk[MAX_VAL];
 } state;
 
 int keep_running = 1;
@@ -154,22 +159,41 @@ void load_state() {
         strcpy(state.m_m_ep,  "172.31.49.233:3306"); strcpy(state.m_s_ep,  "172.31.40.234:3306");
         strcpy(state.r_m_ep,  "172.31.40.234:6379"); strcpy(state.r_s_ep,  "172.31.40.233:6379");
         strcpy(state.message, "Live Simulation Data Active");
-        /* placeholder panels — mock */
-        strcpy(state.lb_host,     "172.31.0.10");
-        strcpy(state.lb_status,   rand_status());
-        strcpy(state.lb_function, "HAProxy / active-passive");
-        strcpy(state.dns_host,    "172.31.0.53");
-        strcpy(state.dns_status,  rand_status());
-        strcpy(state.dns_function,"Internal resolver");
-        strcpy(state.nc1_host,    "172.31.1.11");
-        strcpy(state.nc1_status,  rand_status());
-        strcpy(state.nc1_function,"Nextcloud app node 1");
-        strcpy(state.nc2_host,    "172.31.1.12");
-        strcpy(state.nc2_status,  rand_status());
-        strcpy(state.nc2_function,"Nextcloud app node 2");
-        strcpy(state.nfs_host,    "172.31.2.20");
-        strcpy(state.nfs_status,  rand_status());
-        strcpy(state.nfs_function,"Shared data store");
+
+        /* mock ping: "OK  3ms", "WARN  251ms", "ERROR  timeout" */
+        const char* ping_labels[] = {"OK  3ms", "OK  12ms", "WARN  251ms", "ERROR  timeout"};
+        const char* ping_st[]     = {"OK",       "OK",       "WARN",        "ERROR"};
+#define MOCK_PING(pfx) \
+        { int r=rand()%4; \
+          strcpy(state.pfx##_ping, ping_labels[r]); \
+          strcpy(state.pfx##_ping_status, ping_st[r]); }
+
+        MOCK_PING(lb)
+        strcpy(state.lb_host,  "172.31.0.10");
+        strcpy(state.lb_check, rand()%4 ? "HAProxy active, backend 3/3 up" : "WARNING backend 2/3 up");
+        strcpy(state.lb_chk,   now);
+
+        MOCK_PING(dns)
+        strcpy(state.dns_host,  "172.31.0.53");
+        strcpy(state.dns_check, rand()%4 ? "resolv OK: cluster.local" : "ERROR query timeout");
+        strcpy(state.dns_chk,   now);
+
+        MOCK_PING(nc1)
+        strcpy(state.nc1_host,  "172.31.1.11");
+        strcpy(state.nc1_check, rand()%4 ? "HTTP 200 /status: maintenance=false" : "HTTP 503 /status");
+        strcpy(state.nc1_chk,   now);
+
+        MOCK_PING(nc2)
+        strcpy(state.nc2_host,  "172.31.1.12");
+        strcpy(state.nc2_check, rand()%4 ? "HTTP 200 /status: maintenance=false" : "HTTP 503 /status");
+        strcpy(state.nc2_chk,   now);
+
+        MOCK_PING(nfs)
+        strcpy(state.nfs_host,  "172.31.2.20");
+        strcpy(state.nfs_check, rand()%4 ? "mount OK, rw, 1.2T free" : "ERROR mount unreachable");
+        strcpy(state.nfs_chk,   now);
+#undef MOCK_PING
+
     } else {
         if (access(config.state_file, R_OK)==0) parse_env_file(config.state_file);
         get_env_or("OVERALL_STATUS",          "NO DATA",              state.overall_status, sizeof(state.overall_status));
@@ -196,21 +220,18 @@ void load_state() {
         get_env_or("REDIS_SLAVE_HOST", "unknown",sh,sizeof(sh)); get_env_or("REDIS_SLAVE_PORT", "?",sp,sizeof(sp));
         snprintf(state.r_s_ep, sizeof(state.r_s_ep), "%s:%s", sh, sp);
         /* placeholder panels */
-        get_env_or("LB_HOST",     "N/A", state.lb_host,     sizeof(state.lb_host));
-        get_env_or("LB_STATUS",   "N/A", state.lb_status,   sizeof(state.lb_status));
-        get_env_or("LB_FUNCTION", "N/A", state.lb_function, sizeof(state.lb_function));
-        get_env_or("DNS_HOST",     "N/A", state.dns_host,    sizeof(state.dns_host));
-        get_env_or("DNS_STATUS",   "N/A", state.dns_status,  sizeof(state.dns_status));
-        get_env_or("DNS_FUNCTION", "N/A", state.dns_function,sizeof(state.dns_function));
-        get_env_or("NC1_HOST",     "N/A", state.nc1_host,    sizeof(state.nc1_host));
-        get_env_or("NC1_STATUS",   "N/A", state.nc1_status,  sizeof(state.nc1_status));
-        get_env_or("NC1_FUNCTION", "N/A", state.nc1_function,sizeof(state.nc1_function));
-        get_env_or("NC2_HOST",     "N/A", state.nc2_host,    sizeof(state.nc2_host));
-        get_env_or("NC2_STATUS",   "N/A", state.nc2_status,  sizeof(state.nc2_status));
-        get_env_or("NC2_FUNCTION", "N/A", state.nc2_function,sizeof(state.nc2_function));
-        get_env_or("NFS_HOST",     "N/A", state.nfs_host,    sizeof(state.nfs_host));
-        get_env_or("NFS_STATUS",   "N/A", state.nfs_status,  sizeof(state.nfs_status));
-        get_env_or("NFS_FUNCTION", "N/A", state.nfs_function,sizeof(state.nfs_function));
+#define LOAD_COMP(pfx, KEY) \
+        get_env_or(KEY"_HOST",         "N/A", state.pfx##_host,        sizeof(state.pfx##_host)); \
+        get_env_or(KEY"_PING",         "N/A", state.pfx##_ping,        sizeof(state.pfx##_ping)); \
+        get_env_or(KEY"_PING_STATUS",  "N/A", state.pfx##_ping_status, sizeof(state.pfx##_ping_status)); \
+        get_env_or(KEY"_CHECK",        "N/A", state.pfx##_check,       sizeof(state.pfx##_check)); \
+        get_env_or(KEY"_CHECK_TIMESTAMP", "never", state.pfx##_chk,   sizeof(state.pfx##_chk));
+        LOAD_COMP(lb,  "LB")
+        LOAD_COMP(dns, "DNS")
+        LOAD_COMP(nc1, "NC1")
+        LOAD_COMP(nc2, "NC2")
+        LOAD_COMP(nfs, "NFS")
+#undef LOAD_COMP
     }
     hist_mysql[hist_idx] = status_to_val(state.m_sync);
     hist_redis[hist_idx] = status_to_val(state.r_sync);
@@ -296,29 +317,38 @@ void format_shortened_left(char *buf, size_t bsz, const char* prefix, const char
 }
 
 /*
- * draw_simple_panel: renders a single-host component panel in the same
- * visual language as MariaDB/Redis: status token + status bar on row 1,
- * host on row 2, function on row 3.
+ * draw_simple_panel  h=7
+ *   row 1: Ping     : [OK     ] ████████░░   OK  3ms
+ *   row 2: Host     : 172.31.x.x
+ *   row 3: Check    : <function test result>
+ *   row 4: Checked  : 2026-05-24 14:18:00
  */
 void draw_simple_panel(int x, int y, int w, int h,
                        const char* title,
                        const char* host,
-                       const char* status,
-                       const char* function,
+                       const char* ping_status,
+                       const char* ping,
+                       const char* check,
+                       const char* chk_ts,
                        Theme* th)
 {
     draw_box(x, y, w, h, th->box2, title, th);
-    /* row 1: label + token + bar */
-    tb_print_custom(x+2, y+1, th->fg, th->bg, "Status   :");
-    draw_status_token(x+13, y+1, status, th);
-    draw_status_bar  (x+23, y+1, status, th);
+    /* row 1: ping status token + bar + latency string */
+    tb_print_custom(x+2, y+1, th->fg, th->bg, "Ping     :");
+    draw_status_token(x+13, y+1, ping_status, th);
+    draw_status_bar  (x+23, y+1, ping_status, th);
+    tb_print_fixed   (x+34, y+1, get_status_fg(ping_status,th), th->bg, ping, w-36);
     /* row 2: host */
     char buf[MAX_VAL];
     snprintf(buf, sizeof(buf), "Host     : %s", host);
     tb_print_fixed(x+2, y+2, th->fg, th->bg, buf, w-4);
-    /* row 3: function */
-    snprintf(buf, sizeof(buf), "Function : %s", function);
+    /* row 3: function check result */
+    snprintf(buf, sizeof(buf), "Check    : %s", check);
     tb_print_fixed(x+2, y+3, th->fg, th->bg, buf, w-4);
+    /* row 4: checked timestamp */
+    snprintf(buf, sizeof(buf), "Checked  : %s", chk_ts);
+    tb_print_fixed(x+2, y+4, th->fg, th->bg, buf, w-4);
+    (void)h;
 }
 
 void draw_ui(int anim_tick) {
@@ -358,33 +388,38 @@ void draw_ui(int anim_tick) {
     draw_status_bar(bx+bw-24, y+4, state.r_s_status, th);
     draw_status_bar(bx+bw-13, y+4, state.r_sync, th);
 
-    /* ── Row 1: Loadbalancer (~66%) + DNS (~33%), h=6 ────────────────────── */
+    /* ── Row 1: Loadbalancer (~66%) + DNS (~33%), h=7 ────────────────────── */
     y += 7;
     int lb_w  = (bw * 2) / 3;
     int dns_w = bw - lb_w;
-    draw_simple_panel(bx,      y, lb_w,  6, "Loadbalancer",
-                      state.lb_host,  state.lb_status,  state.lb_function,  th);
-    draw_simple_panel(bx+lb_w, y, dns_w, 6, "DNS",
-                      state.dns_host, state.dns_status, state.dns_function, th);
+    draw_simple_panel(bx,      y, lb_w,  7, "Loadbalancer",
+                      state.lb_host,  state.lb_ping_status, state.lb_ping,
+                      state.lb_check, state.lb_chk, th);
+    draw_simple_panel(bx+lb_w, y, dns_w, 7, "DNS",
+                      state.dns_host, state.dns_ping_status, state.dns_ping,
+                      state.dns_check, state.dns_chk, th);
 
-    /* ── Row 2: Nextcloud 1 (50%) + Nextcloud 2 (50%), h=6 ──────────────── */
-    y += 7;
+    /* ── Row 2: Nextcloud 1 (50%) + Nextcloud 2 (50%), h=7 ──────────────── */
+    y += 8;
     int nc_w  = bw / 2;
     int nc2_w = bw - nc_w;
-    draw_simple_panel(bx,      y, nc_w,  6, "Nextcloud 1",
-                      state.nc1_host, state.nc1_status, state.nc1_function, th);
-    draw_simple_panel(bx+nc_w, y, nc2_w, 6, "Nextcloud 2",
-                      state.nc2_host, state.nc2_status, state.nc2_function, th);
+    draw_simple_panel(bx,      y, nc_w,  7, "Nextcloud 1",
+                      state.nc1_host, state.nc1_ping_status, state.nc1_ping,
+                      state.nc1_check, state.nc1_chk, th);
+    draw_simple_panel(bx+nc_w, y, nc2_w, 7, "Nextcloud 2",
+                      state.nc2_host, state.nc2_ping_status, state.nc2_ping,
+                      state.nc2_check, state.nc2_chk, th);
 
     /* ── Row 3: NFS (33%) + MariaDB (33%) + Redis (33%), h=9 ────────────── */
-    y += 7;
+    y += 8;
     int third  = bw / 3;
     int third2 = bw / 3;
     int third3 = bw - third - third2;
 
     /* NFS */
-    draw_simple_panel(bx, y, third, 6, "NFS",
-                      state.nfs_host, state.nfs_status, state.nfs_function, th);
+    draw_simple_panel(bx, y, third, 7, "NFS",
+                      state.nfs_host, state.nfs_ping_status, state.nfs_ping,
+                      state.nfs_check, state.nfs_chk, th);
 
     /* MariaDB */
     int mx = bx + third;
