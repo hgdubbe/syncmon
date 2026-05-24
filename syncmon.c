@@ -136,6 +136,45 @@ int status_to_val(const char* s) {
     return -1;
 }
 
+/*
+ * derive_check_status: infer OK/WARN/ERROR from a free-form check result string.
+ *
+ * Rules (in priority order):
+ *   ERROR  - string starts with "ERROR" or contains " 5" (HTTP 5xx) or "unreachable"
+ *              or "timeout" or "down" or "NXDOMAIN" or "mount" followed by failure word
+ *   WARN   - contains "WARN" or "WARNING" or HTTP 4xx (" 4") or
+ *              "maintenance=true" or "backend" with degraded count (e.g. "2/3")
+ *   OK     - everything else (resolv OK, HTTP 200, exports: ..., HAProxy active ...)
+ */
+static void derive_check_status(const char* check, char* out, size_t sz) {
+    if (!check || strlen(check) == 0 || strcmp(check, "N/A") == 0) {
+        snprintf(out, sz, "N/A"); return;
+    }
+    /* ERROR conditions */
+    if (strncmp(check, "ERROR", 5) == 0)                          { snprintf(out,sz,"ERROR"); return; }
+    if (strstr(check, "unreachable"))                              { snprintf(out,sz,"ERROR"); return; }
+    if (strstr(check, "timeout"))                                   { snprintf(out,sz,"ERROR"); return; }
+    if (strstr(check, "NXDOMAIN"))                                  { snprintf(out,sz,"ERROR"); return; }
+    if (strstr(check, " 503") || strstr(check, " 502") ||
+        strstr(check, " 500") || strstr(check, " 504"))            { snprintf(out,sz,"ERROR"); return; }
+    if (strstr(check, "link=down"))                                 { snprintf(out,sz,"ERROR"); return; }
+    if (strstr(check, "no exports"))                               { snprintf(out,sz,"ERROR"); return; }
+    /* WARN conditions */
+    if (strstr(check, "WARN") || strstr(check, "WARNING"))        { snprintf(out,sz,"WARN"); return; }
+    if (strstr(check, "maintenance=true"))                         { snprintf(out,sz,"WARN"); return; }
+    if (strstr(check, " 4") && strstr(check, "HTTP"))             { snprintf(out,sz,"WARN"); return; }
+    /* degraded backend e.g. "backend 2/3 up" vs "backend 3/3 up" */
+    {
+        const char *bp = strstr(check, "backend ");
+        if (bp) {
+            int avail = 0, total = 0;
+            if (sscanf(bp + 8, "%d/%d", &avail, &total) == 2 && total > 0 && avail < total)
+                { snprintf(out,sz,"WARN"); return; }
+        }
+    }
+    snprintf(out, sz, "OK");
+}
+
 void load_state() {
     time_t t = time(NULL); struct tm tm = *localtime(&t);
     char now[64]; strftime(now, sizeof(now), "%Y-%m-%d %H:%M:%S", &tm);
@@ -238,7 +277,7 @@ void load_state() {
     hist_idx = (hist_idx + 1) % HIST_SIZE;
 }
 
-/* ── UI helpers ─────────────────────────────────────────────────────────── */
+/* ── UI helpers ─────────────────────────────────────────────────────────────────────── */
 int tb_print_custom(int x, int y, uint16_t fg, uint16_t bg, const char *str) {
     while (*str) { uint32_t u; str += tb_utf8_char_to_unicode(&u, str); tb_set_cell(x++,y,u,fg,bg); }
     return 0;
@@ -317,11 +356,16 @@ void format_shortened_left(char *buf, size_t bsz, const char* prefix, const char
 }
 
 /*
- * draw_simple_panel  h=7
- *   row 1: Ping     : [OK     ] ████████░░   OK  3ms
+ * draw_simple_panel  h=8  (one row taller to accommodate check-status line)
+ *
+ *   row 1: Ping     : [OK     ] ████████░░  OK  3ms
  *   row 2: Host     : 172.31.x.x
- *   row 3: Check    : <function test result>
+ *   row 3: Check    : [OK     ] ████████░░  <detail text>
  *   row 4: Checked  : 2026-05-24 14:18:00
+ *
+ * The check-status token + bar are derived from the check result string via
+ * derive_check_status(), mirroring the Master/Slave status presentation used
+ * in the MariaDB and Redis panels.
  */
 void draw_simple_panel(int x, int y, int w, int h,
                        const char* title,
@@ -333,21 +377,33 @@ void draw_simple_panel(int x, int y, int w, int h,
                        Theme* th)
 {
     draw_box(x, y, w, h, th->box2, title, th);
+
     /* row 1: ping status token + bar + latency string */
     tb_print_custom(x+2, y+1, th->fg, th->bg, "Ping     :");
     draw_status_token(x+13, y+1, ping_status, th);
     draw_status_bar  (x+23, y+1, ping_status, th);
     tb_print_fixed   (x+34, y+1, get_status_fg(ping_status,th), th->bg, ping, w-36);
+
     /* row 2: host */
     char buf[MAX_VAL];
     snprintf(buf, sizeof(buf), "Host     : %s", host);
     tb_print_fixed(x+2, y+2, th->fg, th->bg, buf, w-4);
-    /* row 3: function check result */
-    snprintf(buf, sizeof(buf), "Check    : %s", check);
-    tb_print_fixed(x+2, y+3, th->fg, th->bg, buf, w-4);
+
+    /* row 3: check status token + bar + detail text
+     * Layout: "Check    : [STATUS ] ████████░░  <truncated detail>"
+     *          col+2     col+13  col+23  col+34 onward
+     */
+    char chk_status[16];
+    derive_check_status(check, chk_status, sizeof(chk_status));
+    tb_print_custom(x+2,  y+3, th->fg,                       th->bg, "Check    :");
+    draw_status_token(x+13, y+3, chk_status, th);
+    draw_status_bar  (x+23, y+3, chk_status, th);
+    tb_print_fixed   (x+34, y+3, get_status_fg(chk_status,th), th->bg, check, w-36);
+
     /* row 4: checked timestamp */
     snprintf(buf, sizeof(buf), "Checked  : %s", chk_ts);
     tb_print_fixed(x+2, y+4, th->fg, th->bg, buf, w-4);
+
     (void)h;
 }
 
@@ -360,10 +416,10 @@ void draw_ui(int anim_tick) {
     int bw = config.dash_w + 2;
     int bx = (w - bw) / 2; if (bx < 0) bx = 0;
 
-    const char* spinner[] = {"⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"};
+    const char* spinner[] = {"\u280b","\u2819","\u2839","\u2838","\u283c","\u2834","\u2826","\u2827","\u2807","\u280f"};
     char buf[1024];
 
-    /* ── Row 0: Overview (full width, h=6) ───────────────────────────────── */
+    /* ── Row 0: Overview (full width, h=6) ────────────────────────────────────────────── */
     int y = 1;
     draw_box(bx, y, bw, 6, th->box1, "Overview", th);
     tb_print_custom(bx+2, y+1, th->accent, th->bg, "Nextcloud HA cluster monitor");
@@ -388,7 +444,7 @@ void draw_ui(int anim_tick) {
     draw_status_bar(bx+bw-24, y+4, state.r_s_status, th);
     draw_status_bar(bx+bw-13, y+4, state.r_sync, th);
 
-    /* ── Row 1: Loadbalancer (~66%) + DNS (~33%), h=7 ────────────────────── */
+    /* ── Row 1: Loadbalancer (~66%) + DNS (~33%), h=7 ─────────────────────────── */
     y += 7;
     int lb_w  = (bw * 2) / 3;
     int dns_w = bw - lb_w;
@@ -399,7 +455,7 @@ void draw_ui(int anim_tick) {
                       state.dns_host, state.dns_ping_status, state.dns_ping,
                       state.dns_check, state.dns_chk, th);
 
-    /* ── Row 2: Nextcloud 1 (50%) + Nextcloud 2 (50%), h=7 ──────────────── */
+    /* ── Row 2: Nextcloud 1 (50%) + Nextcloud 2 (50%), h=7 ──────────────────── */
     y += 8;
     int nc_w  = bw / 2;
     int nc2_w = bw - nc_w;
@@ -410,7 +466,7 @@ void draw_ui(int anim_tick) {
                       state.nc2_host, state.nc2_ping_status, state.nc2_ping,
                       state.nc2_check, state.nc2_chk, th);
 
-    /* ── Row 3: NFS (33%) + MariaDB (33%) + Redis (33%), h=9 ────────────── */
+    /* ── Row 3: NFS (33%) + MariaDB (33%) + Redis (33%), h=9 ────────────────── */
     y += 8;
     int third  = bw / 3;
     int third2 = bw / 3;
@@ -464,7 +520,7 @@ void draw_ui(int anim_tick) {
     snprintf(buf, sizeof(buf), "Checked: %s", state.r_chk);
     tb_print_fixed(rx+2, y+7, th->fg, th->bg, buf, third3-4);
 
-    /* ── Footer: history + message ───────────────────────────────────────── */
+    /* ── Footer: history + message ────────────────────────────────────────────────────── */
     y += 10;
     draw_box(bx, y, bw, 5, th->box1, "History / Details", th);
     tb_print_custom(bx+2, y+1, th->highlight, th->bg, "MariaDB sync :");

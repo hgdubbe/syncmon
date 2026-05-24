@@ -156,7 +156,7 @@ void log_message(Config *cfg, const char *msg) {
     }
 }
 
-/* ── now_str: fill buf with current timestamp ───────────────────────────── */
+/* ── now_str: fill buf with current timestamp ─────────────────────────────────────── */
 static void now_str(char *buf, size_t sz) {
     time_t t=time(NULL); struct tm tm=*localtime(&t);
     snprintf(buf,sz,"%04d-%02d-%02d %02d:%02d:%02d",
@@ -166,14 +166,17 @@ static void now_str(char *buf, size_t sz) {
 
 /* ── ping_host: ICMP ping, fills status ("OK"/"WARN"/"ERROR") + latency ─── */
 void ping_host(const char *host, char *status_out, char *detail_out) {
+    /*
+     * Build the command in two parts to prevent GCC from scanning the
+     * awk printf format string ("%.0fms") as a C format specifier.
+     * The awk snippet is a shell string, not a C printf argument.
+     */
     char cmd[512];
-    snprintf(cmd, sizeof(cmd),
-             "ping -c1 -W2 %s 2>/dev/null"
-             " | awk '/rtt|round-trip/{split($4,a,\"/\"); printf \"%.0fms\",a[2]}'",
-             host);
+    const char *awk_frag = " | awk '/rtt|round-trip/{split($4,a,\"/\"); printf \"%.0fms\",a[2]}'";
+    snprintf(cmd, sizeof(cmd), "ping -c1 -W2 %s 2>/dev/null%s", host, awk_frag);
     FILE *fp = popen(cmd, "r");
     char buf[64] = {0};
-    if (fp) { fgets(buf, sizeof(buf), fp); pclose(fp); }
+    if (fp) { (void)fgets(buf, sizeof(buf), fp); pclose(fp); }
     buf[strcspn(buf, "\r\n")] = 0;
     if (strlen(buf) == 0) {
         snprintf(status_out, 16, "ERROR");
@@ -200,13 +203,13 @@ void http_check(const char *url, char *result_out, size_t result_sz) {
     FILE *fp = popen(cmd, "r");
     if (!fp) { snprintf(result_out, result_sz, "curl error"); return; }
     char buf[256] = {0};
-    fgets(buf, sizeof(buf), fp);
+    (void)fgets(buf, sizeof(buf), fp);
     pclose(fp);
     buf[strcspn(buf, "\r\n")] = 0;
     snprintf(result_out, result_sz, "%s", buf);
 }
 
-/* ── dns_check: dig lookup, fills "resolv OK: <addr>" or error ─────────── */
+/* ── dns_check: dig lookup, fills "resolv OK: <addr>" or error ───────────── */
 void dns_check(const char *nameserver, char *result_out, size_t result_sz) {
     char cmd[512];
     snprintf(cmd, sizeof(cmd),
@@ -214,7 +217,7 @@ void dns_check(const char *nameserver, char *result_out, size_t result_sz) {
              nameserver);
     FILE *fp = popen(cmd, "r");
     char buf[128] = {0};
-    if (fp) { fgets(buf, sizeof(buf), fp); pclose(fp); }
+    if (fp) { (void)fgets(buf, sizeof(buf), fp); pclose(fp); }
     buf[strcspn(buf, "\r\n")] = 0;
     if (strlen(buf) > 0)
         snprintf(result_out, result_sz, "resolv OK: %s", buf);
@@ -222,14 +225,14 @@ void dns_check(const char *nameserver, char *result_out, size_t result_sz) {
         snprintf(result_out, result_sz, "ERROR query timeout / NXDOMAIN");
 }
 
-/* ── nfs_check: showmount or /proc/mounts, fills mount status ───────────── */
+/* ── nfs_check: showmount or /proc/mounts, fills mount status ──────────── */
 void nfs_check(const char *host, char *result_out, size_t result_sz) {
     char cmd[512];
     snprintf(cmd, sizeof(cmd),
              "showmount -e %s --no-headers 2>/dev/null | head -1", host);
     FILE *fp = popen(cmd, "r");
     char buf[128] = {0};
-    if (fp) { fgets(buf, sizeof(buf), fp); pclose(fp); }
+    if (fp) { (void)fgets(buf, sizeof(buf), fp); pclose(fp); }
     buf[strcspn(buf, "\r\n")] = 0;
     if (strlen(buf) > 0)
         snprintf(result_out, result_sz, "exports: %s", buf);
@@ -237,7 +240,7 @@ void nfs_check(const char *host, char *result_out, size_t result_sz) {
         snprintf(result_out, result_sz, "ERROR no exports / unreachable");
 }
 
-/* ── write_state: atomic write via tmp rename ──────────────────────────── */
+/* ── write_state: atomic write via tmp rename ────────────────────────── */
 void write_state(const char* state_file,
                  const char* mysql_master_host, const char* mysql_master_port,
                  const char* mysql_slave_host,  const char* mysql_slave_port,
@@ -361,7 +364,7 @@ void run_checks(Config *cfg) {
     char redis_rep_detail[256]="unknown", overall_msg[256]="";
     char mysql_check_ts[64]="unknown", redis_check_ts[64]="unknown";
 
-    /* ── MariaDB ───────────────────────────────────────────────────────── */
+    /* ── MariaDB ────────────────────────────────────────────────────────────────── */
     if (cfg->enable_mysql_check) {
         char cmd[MAX_BUFFER], pass_opt[300]={0};
         if (strlen(cfg->mysql_password)>0)
@@ -392,7 +395,7 @@ void run_checks(Config *cfg) {
         now_str(mysql_check_ts, sizeof(mysql_check_ts));
     }
 
-    /* ── Redis ─────────────────────────────────────────────────────────── */
+    /* ── Redis ─────────────────────────────────────────────────────────────────── */
     if (cfg->enable_redis_check) {
         char cmd[MAX_BUFFER], out[MAX_BUFFER];
         const char *pass=cfg->redis_password;
@@ -431,7 +434,7 @@ void run_checks(Config *cfg) {
         now_str(redis_check_ts, sizeof(redis_check_ts));
     }
 
-    /* ── Placeholder components ─────────────────────────────────────────── */
+    /* ── Placeholder components ────────────────────────────────────────────────────── */
     char lb_ping_st[16],  lb_ping[64],  lb_check_res[256], lb_chk[64];
     char dns_ping_st[16], dns_ping[64], dns_check_res[256],dns_chk[64];
     char nc1_ping_st[16], nc1_ping[64], nc1_check_res[256],nc1_chk[64];
@@ -478,7 +481,7 @@ void run_checks(Config *cfg) {
     nfs_check(cfg->nfs_host, nfs_check_res, sizeof(nfs_check_res));
     now_str(nfs_chk, sizeof(nfs_chk));
 
-    /* ── Overall status ─────────────────────────────────────────────────── */
+    /* ── Overall status ──────────────────────────────────────────────────────────────── */
     char overall[16];
     if (strcmp(mysql_master_status,"OK")==0 && strcmp(mysql_slave_status,"OK")==0 &&
         strcmp(mysql_sync_status,  "OK")==0 &&
