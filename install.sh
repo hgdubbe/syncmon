@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SyncMon Installer — experimental branch
+# SyncMon Installer — new-gui branch
 # Usage: sudo bash install.sh
 set -euo pipefail
 
@@ -15,15 +15,15 @@ ask()  { echo -e "${BLD}$*${RST}"; }
 [[ $EUID -eq 0 ]] || die "Please run as root: sudo bash install.sh"
 
 echo -e "\n${YLW}${BLD}╔══════════════════════════════════════════════╗"
-echo    "║   SyncMon Installer  [experimental branch]  ║"
+echo    "║     SyncMon Installer  [new-gui branch]     ║"
 echo -e "╚══════════════════════════════════════════════╝${RST}"
-warn "This installs the EXPERIMENTAL branch. It may be unstable."
+warn "This installs the NEW-GUI branch. It may be unstable."
 warn "For the stable release use the main branch installer."
 echo
 
 # ── 1. Download / locate repository ───────────────────────────────────────────
 REPO_URL="https://github.com/hgdubbe/syncmon"
-BRANCH="experimental"
+BRANCH="new-gui"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -133,8 +133,8 @@ ok "TUI installed."
 
 # ── 10. Done – usage summary ───────────────────────────────────────────────────
 echo
-echo -e "${GRN}${BLD}Installation complete! (experimental branch)${RST}\n"
-warn "Remember: this is an experimental build. Some dashboard panels show placeholder data."
+echo -e "${GRN}${BLD}Installation complete! (new-gui branch)${RST}\n"
+warn "Remember: this is a new-gui build. Some dashboard panels may still show placeholder data."
 echo
 echo -e "${BLD}Service management:${RST}"
 echo    "  service syncmon-daemon start    # start the daemon"
@@ -148,6 +148,14 @@ echo    "  syncmon                         # launch with defaults"
 echo    "  syncmon -r 5                    # refresh every 5 seconds"
 echo    "  syncmon -f /custom/state.env    # use a custom state file"
 echo    "  syncmon --test                  # launch with simulated data"
+echo    "  syncmon --no-braille            # use classic block graphs"
+echo
+echo -e "${BLD}TUI keyboard shortcuts:${RST}"
+echo    "  q / Ctrl+C   Quit"
+echo    "  t            Open theme selection menu (↑/↓ + Enter)"
+echo    "  g            Toggle graph style (Braille / blocks)"
+echo    "  s            Cycle spinner style"
+echo    "  a            Toggle AI analysis panel"
 echo
 echo -e "${BLD}Configuration:${RST}"
 echo    "  /etc/syncmon.d/config.conf          # daemon config (hosts, ports, credentials)"
