@@ -628,14 +628,14 @@ void draw_node_panel(int x, int y, int w, int h,
                      const char* check,
                      const char* chk_ts,
                      Theme* th) {
-                     
+
     char full_title[256];
     if (host && host[0] != '\0' && strcmp(host, "N/A") != 0) {
         snprintf(full_title, sizeof(full_title), "%s : %s", title, host);
     } else {
         snprintf(full_title, sizeof(full_title), "%s", title);
     }
-                     
+
     draw_box(x, y, w, h, th->box2, full_title, th);
 
     int bar_w = 10;
@@ -693,17 +693,28 @@ void draw_status_line_lr_flush(int x, int y, int w,
 /*
  * draw_continuous_sync_path
  *
- * The animated dot travels a closed loop:
- *   Phase 1 – descend the left/master vertical leg  (vert_len steps)
- *   Phase 2 – traverse the horizontal rail           (horiz_len steps)
- *   Phase 3 – ascend the right/slave vertical leg    (vert_len steps)
+ * The animated dot travels a closed loop with the sync-info box treated as
+ * a "tunnel": the dot disappears at the left edge of the box and reappears
+ * immediately at the right edge on the SAME tick — no pause, no false reset.
  *
- * IMPORTANT: tick must NOT be pre-capped to a small value by the caller;
- * the modulo is applied here against the real total_len so that all three
- * phases are reachable regardless of path geometry.
+ * This is achieved by building a "visible segment" list that skips the
+ * hidden columns, so total_len counts only the columns where the dot
+ * is actually rendered.  The box crossing therefore consumes ZERO ticks.
+ *
+ * Loop geometry (dir > 0, MariaDB example):
+ *   Seg 0 : left vertical leg     x=x1,  y = hook_y .. rail_y-1   (vert_len steps)
+ *   Seg 1 : rail left of box      y=rail, x = x1    .. box_x-1    (left_gap steps)
+ *   Seg 2 : rail right of box     y=rail, x = box_x+box_w .. x2   (right_gap steps)
+ *   Seg 3 : right vertical leg    x=x2,  y = rail_y .. hook_y+1   (vert_len steps)
+ *
+ * For dir < 0 (Redis) the direction along the rail is reversed.
  */
-void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h, int box_x, int box_w,
-                               int dir, const char* master_status, const char* sync_status, const char* slave_status,
+void draw_continuous_sync_path(int x1, int x2, int hook_y,
+                               int box_y, int box_h, int box_x, int box_w,
+                               int dir,
+                               const char* master_status,
+                               const char* sync_status,
+                               const char* slave_status,
                                Theme* th, int tick)
 {
     uint16_t col = get_status_fg(sync_status, th);
@@ -711,96 +722,99 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h,
 
     int rail_y = box_y + box_h / 2;
 
-    /* Static horizontal rail (skip cells covered by the sync-info box) */
+    /* ── Static wire ────────────────────────────────────────────── */
+    /* Horizontal rail, skipping columns covered by the sync box */
     for (int x = x1; x <= x2; x++) {
-        if (x < box_x || x >= box_x + box_w) {
+        if (x < box_x || x >= box_x + box_w)
             tb_set_cell(x, rail_y, 0x2500, th->skip, th->bg);
-        }
     }
-
-    /* Vertical drops from hook_y down to rail_y on both sides */
+    /* Vertical legs */
     for (int y = hook_y; y < rail_y; y++) {
         tb_set_cell(x1, y, 0x2502, th->skip, th->bg);
         tb_set_cell(x2, y, 0x2502, th->skip, th->bg);
     }
-
     /* Corner joints */
     tb_set_cell(x1, rail_y, 0x2514, th->skip, th->bg);
     tb_set_cell(x2, rail_y, 0x2518, th->skip, th->bg);
 
-    /* No animation when master is completely down */
     if (strcmp(master_status, "ERROR") == 0) return;
 
-    int vert_len  = rail_y - hook_y;   /* number of rows in each vertical leg */
-    int horiz_len = x2 - x1;           /* number of columns in horizontal leg  */
-    int total_len = vert_len + horiz_len + vert_len;
+    /* ── Visible segment lengths ────────────────────────────────── */
+    int vert_len  = rail_y - hook_y;          /* rows per vertical leg   */
+    int left_gap  = box_x - x1;              /* cols left of box on rail */
+    int right_gap = x2 - (box_x + box_w);   /* cols right of box on rail */
+    if (left_gap  < 0) left_gap  = 0;
+    if (right_gap < 0) right_gap = 0;
 
+    /*
+     * total_len = only the VISIBLE columns / rows.
+     * The box interior is a zero-cost tunnel — the dot teleports.
+     */
+    int total_len = vert_len + left_gap + right_gap + vert_len;
     if (total_len <= 0) return;
 
-    int pos = tick % total_len;        /* modulo applied HERE with the real length */
+    /* Direction indicator arrow at the slave hook */
+    if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
+        if (dir > 0) tb_set_cell(x2, hook_y, 0x25B2, col | TB_BOLD, th->bg);
+        else         tb_set_cell(x1, hook_y, 0x25B2, col | TB_BOLD, th->bg);
+    }
+
+    int pos = tick % total_len;
     int dot_x = -1, dot_y = -1;
 
     if (dir > 0) {
-        /* MariaDB: master (left) → slave (right) */
-        if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
-            tb_set_cell(x2, hook_y, 0x25B2, col | TB_BOLD, th->bg);
-        }
-
+        /* MariaDB: master-left → slave-right */
         if (pos < vert_len) {
-            /* Phase 1: descend from left hook_y down to rail_y */
+            /* Phase 1: descend left leg */
             dot_x = x1;
             dot_y = hook_y + pos;
-        } else if (pos < vert_len + horiz_len) {
-            /* Phase 2: travel right along rail */
+        } else if (pos < vert_len + left_gap) {
+            /* Phase 2: travel right, left of box */
             dot_x = x1 + (pos - vert_len);
             dot_y = rail_y;
-        } else {
-            /* Phase 3: ascend from rail_y up to right hook_y */
-            dot_x = x2;
-            dot_y = rail_y - (pos - vert_len - horiz_len);
-        }
-
-        /* Suppress dot on the slave-side if sync/slave is in error */
-        if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0)
-                && dot_x > box_x + box_w / 2) {
-            dot_x = -1;
-        }
-
-    } else {
-        /* Redis: master (right) → slave (left) */
-        if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
-            tb_set_cell(x1, hook_y, 0x25B2, col | TB_BOLD, th->bg);
-        }
-
-        if (pos < vert_len) {
-            /* Phase 1: descend from right hook_y down to rail_y */
-            dot_x = x2;
-            dot_y = hook_y + pos;
-        } else if (pos < vert_len + horiz_len) {
-            /* Phase 2: travel left along rail */
-            dot_x = x2 - (pos - vert_len);
+        } else if (pos < vert_len + left_gap + right_gap) {
+            /* Phase 3: travel right, right of box (teleport over box) */
+            dot_x = box_x + box_w + (pos - vert_len - left_gap);
             dot_y = rail_y;
         } else {
-            /* Phase 3: ascend from rail_y up to left hook_y */
-            dot_x = x1;
-            dot_y = rail_y - (pos - vert_len - horiz_len);
+            /* Phase 4: ascend right leg */
+            dot_x = x2;
+            dot_y = rail_y - (pos - vert_len - left_gap - right_gap);
         }
 
-        /* Suppress dot on the slave-side if sync/slave is in error */
+        /* Suppress slave-side dot when sync/slave is in error */
         if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0)
-                && dot_x < box_x + box_w / 2) {
+                && dot_x > box_x + box_w / 2)
             dot_x = -1;
+
+    } else {
+        /* Redis: master-right → slave-left */
+        if (pos < vert_len) {
+            /* Phase 1: descend right leg */
+            dot_x = x2;
+            dot_y = hook_y + pos;
+        } else if (pos < vert_len + right_gap) {
+            /* Phase 2: travel left, right of box */
+            dot_x = x2 - (pos - vert_len);
+            dot_y = rail_y;
+        } else if (pos < vert_len + right_gap + left_gap) {
+            /* Phase 3: travel left, left of box (teleport over box) */
+            dot_x = box_x - 1 - (pos - vert_len - right_gap);
+            dot_y = rail_y;
+        } else {
+            /* Phase 4: ascend left leg */
+            dot_x = x1;
+            dot_y = rail_y - (pos - vert_len - right_gap - left_gap);
         }
+
+        /* Suppress slave-side dot when sync/slave is in error */
+        if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0)
+                && dot_x < box_x + box_w / 2)
+            dot_x = -1;
     }
 
-    if (dot_x != -1) {
-        /* Draw the dot everywhere EXCEPT inside the sync-info box rectangle */
-        int inside_box = (dot_x >= box_x && dot_x < box_x + box_w &&
-                          dot_y >= box_y && dot_y < box_y + box_h);
-        if (!inside_box) {
-            tb_set_cell(dot_x, dot_y, 0x25C6, col | TB_BOLD, th->bg);
-        }
-    }
+    if (dot_x != -1 && dot_y != -1)
+        tb_set_cell(dot_x, dot_y, 0x25C6, col | TB_BOLD, th->bg);
 }
 
 void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
@@ -828,7 +842,6 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     int left_hook_x  = x + 7;
     int right_hook_x = x + w - 8;
 
-    /* Pass anim_tick directly — do NOT cap with % 60 */
     draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w,
                               1, state.m_m_status, state.m_sync, state.m_s_status, th, anim_tick);
 
@@ -869,7 +882,6 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     int left_hook_x  = x + 7;
     int right_hook_x = x + w - 8;
 
-    /* Pass anim_tick directly — do NOT cap with % 60 */
     draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w,
                               -1, state.r_m_status, state.r_sync, state.r_s_status, th, anim_tick);
 
