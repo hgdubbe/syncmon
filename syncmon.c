@@ -77,14 +77,12 @@ struct {
     int dash_w;
     int use_braille;
     int spinner_style;
-    int show_ai;
 } config = {
     .display_refresh = 2,
     .state_file      = STATE_FILE_DEFAULT,
     .dash_w          = 92,
     .use_braille     = 1,
-    .spinner_style   = 0,
-    .show_ai         = 1
+    .spinner_style   = 0
 };
 
 struct {
@@ -876,29 +874,15 @@ void draw_ui(int anim_tick) {
     tb_print_center(bx+1, y+2, th->accent, th->hdr_bg, buf, bw-2);
 
     y = 4;
-    int ov_h = config.show_ai ? 6 : 3;
+    int ov_h = 6;
     draw_box(bx, y, bw, ov_h, th->box1, "Overview", th);
 
     tb_print_custom(bx+2, y+1, th->fg, th->bg, "Overall Status:");
     draw_badge(bx+18, y+1, state.overall_status, th);
 
-    tb_print_custom(bx+30, y+1, th->highlight, th->bg, SYM_DB " M:");
-    draw_glow_bar(bx+35, y+1, state.m_m_status, th, 5);
-    draw_glow_bar(bx+41, y+1, state.m_s_status, th, 5);
-    draw_glow_bar(bx+47, y+1, state.m_sync, th, 5);
-
-    tb_print_custom(bx+55, y+1, th->highlight, th->bg, SYM_REDIS " R:");
-    draw_glow_bar(bx+60, y+1, state.r_m_status, th, 5);
-    draw_glow_bar(bx+66, y+1, state.r_s_status, th, 5);
-    draw_glow_bar(bx+72, y+1, state.r_sync, th, 5);
-
-    if (config.show_ai) {
-        tb_hline(bx+1, y+2, 0x2508, th->skip, th->bg, bw-2);
-        tb_print_custom(bx+2, y+2, th->accent, th->bg, SYM_AI " AI Analysis");
-        tb_print_fixed(bx+2, y+3, th->hdr_fg, th->bg, ai_line1, bw-4);
-        tb_print_fixed(bx+2, y+4, th->fg,     th->bg, ai_line2, bw-4);
-        tb_print_fixed(bx+2, y+5, th->fg,     th->bg, ai_line3, bw-4);
-    }
+    tb_print_fixed(bx+2, y+2, th->hdr_fg, th->bg, ai_line1, bw-4);
+    tb_print_fixed(bx+2, y+3, th->fg,     th->bg, ai_line2, bw-4);
+    tb_print_fixed(bx+2, y+4, th->fg,     th->bg, ai_line3, bw-4);
 
     y += ov_h + 1;
 
@@ -961,7 +945,6 @@ void draw_ui(int anim_tick) {
     tb_print_custom(bx+12, y+1, th->accent|TB_BOLD, th->bg, "[t Themes]");
     tb_print_custom(bx+25, y+1, th->accent|TB_BOLD, th->bg, "[g Graph]");
     tb_print_custom(bx+37, y+1, th->accent|TB_BOLD, th->bg, "[s Spinner]");
-    tb_print_custom(bx+52, y+1, th->accent|TB_BOLD, th->bg, "[a AI Panel]");
 
     draw_theme_menu(th);
     tb_present();
@@ -978,8 +961,7 @@ static void print_usage(const char* prog) {
            "  q / Ctrl+C   Quit\n"
            "  t            Theme menu\n"
            "  g            Toggle graph style\n"
-           "  s            Cycle spinner style\n"
-           "  a            Toggle AI analysis panel\n",
+           "  s            Cycle spinner style\n",
            prog, STATE_FILE_DEFAULT);
 }
 
@@ -1020,7 +1002,7 @@ int main(int argc, char** argv) {
     struct tb_event ev;
     uint64_t last_update = 0;
     int last_tick = -1;
-    int force_redraw = 1; // Trigger full clear on boot, resize, and theme swaps
+    int force_redraw = 1;
 
     load_state();
     last_update = get_time_ms();
@@ -1029,26 +1011,23 @@ int main(int argc, char** argv) {
         uint64_t now = get_time_ms();
         int new_tick = (now / 120) % 1000;
 
-        // Poll state file based on refresh configuration
         if (now - last_update >= (uint64_t)config.display_refresh * 1000) {
             load_state();
             last_update = now;
             force_redraw = 1;
         }
 
-        // Only redraw if the animation tick actually changed or we forced a clear
         if (new_tick != last_tick || force_redraw) {
             if (force_redraw) {
                 Theme* th = &themes[current_theme];
                 tb_set_clear_attrs(th->fg, th->bg);
-                tb_clear(); // Clear back buffer only when necessary
+                tb_clear();
             }
             draw_ui(new_tick);
             last_tick = new_tick;
             force_redraw = 0;
         }
 
-        // Calculate sleep time until the exact next 120ms frame boundary
         uint64_t next_frame = ((now / 120) + 1) * 120;
         uint64_t current = get_time_ms();
         int wait_ms = current >= next_frame ? 1 : (int)(next_frame - current);
@@ -1070,7 +1049,6 @@ int main(int argc, char** argv) {
                     else if (ev.ch == 'g') { config.use_braille = !config.use_braille; force_redraw = 1; }
                     else if (ev.ch == 't') { theme_menu_sel = current_theme; theme_menu_open = 1; force_redraw = 1; }
                     else if (ev.ch == 's') { config.spinner_style = (config.spinner_style + 1) % 4; force_redraw = 1; }
-                    else if (ev.ch == 'a') { config.show_ai = !config.show_ai; force_redraw = 1; }
                 }
             }
         }
