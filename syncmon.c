@@ -808,9 +808,15 @@ void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
             int arr_x = box_x - 1;
             if (arr_x > x1)
                 tb_set_cell(arr_x, rail_y, 0x25B6, col | TB_BOLD, th->bg);
+            int arr_x = box_x + box_w;
+            if (arr_x > x1)
+                tb_set_cell(arr_x, rail_y, 0x25B6, col | TB_BOLD, th->bg);
         } else {
             /* arrow points left → place ◀ at the cell just after the box */
             int arr_x = box_x + box_w;
+            if (arr_x < x2)
+                tb_set_cell(arr_x, rail_y, 0x25C0, col | TB_BOLD, th->bg);
+            int arr_x = box_x -1;
             if (arr_x < x2)
                 tb_set_cell(arr_x, rail_y, 0x25C0, col | TB_BOLD, th->bg);
         }
