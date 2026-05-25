@@ -385,6 +385,20 @@ void tb_print_center(int x, int y, uint16_t fg, uint16_t bg, const char *str, in
     tb_print_custom(x + pad, y, fg, bg, str);
 }
 
+void tb_print_right(int x, int y, uint16_t fg, uint16_t bg, const char *str, int w) {
+    int len = 0;
+    const char *p = str;
+    while (*p) {
+        uint32_t u;
+        p += tb_utf8_char_to_unicode(&u, p);
+        len++;
+    }
+    int pad = w - len;
+    if (pad < 0) pad = 0;
+    tb_print_fixed(x, y, fg, bg, "", pad);
+    tb_print_custom(x + pad, y, fg, bg, str);
+}
+
 void tb_fill(int x, int y, int w, int h, uint16_t fg, uint16_t bg) {
     for (int r = 0; r < h; r++)
         for (int c = 0; c < w; c++)
@@ -393,6 +407,10 @@ void tb_fill(int x, int y, int w, int h, uint16_t fg, uint16_t bg) {
 
 void tb_hline(int x, int y, uint32_t ch, uint16_t fg, uint16_t bg, int len) {
     for (int i = 0; i < len; i++) tb_set_cell(x + i, y, ch, fg, bg);
+}
+
+void tb_vline(int x, int y, uint32_t ch, uint16_t fg, uint16_t bg, int len) {
+    for (int i = 0; i < len; i++) tb_set_cell(x, y + i, ch, fg, bg);
 }
 
 uint16_t get_status_fg(const char* s, Theme* th) {
@@ -632,7 +650,7 @@ void draw_node_panel(int x, int y, int w, int h,
     tb_print_fixed(label_x, y+3, th->skip, th->bg, buf, w-4);
 }
 
-void draw_status_line_lr(int x, int y, int w,
+void draw_status_line_lr_flush(int x, int y, int w,
                          const char* left_label,
                          const char* left_status,
                          const char* mid_label,
@@ -643,11 +661,11 @@ void draw_status_line_lr(int x, int y, int w,
 {
     int left_x  = x + 2;
     int mid_x   = x + (w / 2) - 10;
-    int right_x = x + w - 26;
+    int right_x = x + w - 20;
 
     tb_print_custom(left_x, y, th->accent, th->bg, left_label);
-    tb_print_custom(left_x + 10, y, th->fg, th->bg, ":");
-    draw_badge(left_x + 12, y, left_status, th);
+    tb_print_custom(left_x + strlen(left_label) + 1, y, th->fg, th->bg, ":");
+    draw_badge(left_x + strlen(left_label) + 3, y, left_status, th);
 
     tb_print_custom(mid_x, y, th->accent, th->bg, mid_label);
     tb_print_custom(mid_x + 7, y, th->fg, th->bg, ":");
@@ -658,30 +676,65 @@ void draw_status_line_lr(int x, int y, int w,
     tb_print_custom(right_x + 12, y, th->accent, th->bg, right_label);
 }
 
-void draw_endpoint_markers(int x1, int x2, int y, Theme* th)
-{
-    tb_set_cell(x1, y, 0x2514, th->skip, th->bg); /* └ */
-    tb_set_cell(x1, y-1, 0x2502, th->skip, th->bg); /* │ */
-    tb_set_cell(x2, y, 0x2518, th->skip, th->bg); /* ┘ */
-    tb_set_cell(x2, y-1, 0x2502, th->skip, th->bg); /* │ */
-}
-
-void draw_sync_rail(int x1, int x2, int y, int dir, const char* status, Theme* th, int tick)
+void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h, int box_x, int box_w, int dir, const char* status, Theme* th, int tick)
 {
     uint16_t col = get_status_fg(status, th);
     if (x2 <= x1) return;
 
-    for (int x = x1; x <= x2; x++) tb_set_cell(x, y, 0x2500, th->skip, th->bg);
+    /* Draw static path (horizontal line passing behind the box) */
+    for (int x = x1; x <= x2; x++) {
+        if (x < box_x || x > box_x + box_w - 1) {
+            tb_set_cell(x, box_y + box_h/2, 0x2500, th->skip, th->bg); /* ─ */
+        }
+    }
+    
+    /* Draw left and right vertical drops */
+    tb_set_cell(x1, hook_y, 0x2502, th->skip, th->bg); /* │ */
+    tb_set_cell(x1, box_y + box_h/2, 0x2514, th->skip, th->bg); /* └ */
+    
+    tb_set_cell(x2, hook_y, 0x2502, th->skip, th->bg); /* │ */
+    tb_set_cell(x2, box_y + box_h/2, 0x2518, th->skip, th->bg); /* ┘ */
 
-    int len = x2 - x1 + 1;
-    int pos = tick % len;
+    /* Calculate total path length */
+    int vert_len_left = (box_y + box_h/2) - hook_y;
+    int vert_len_right = (box_y + box_h/2) - hook_y;
+    int horiz_len = x2 - x1;
+    int total_len = vert_len_left + horiz_len + vert_len_right;
 
-    if (dir > 0) {
-        tb_set_cell(x2, y, 0x25B6, col | TB_BOLD, th->bg);               /* ▶ */
-        tb_set_cell(x1 + pos, y, 0x25C6, col | TB_BOLD, th->bg);         /* ◆ */
-    } else {
-        tb_set_cell(x1, y, 0x25C0, col | TB_BOLD, th->bg);               /* ◀ */
-        tb_set_cell(x2 - pos, y, 0x25C6, col | TB_BOLD, th->bg);         /* ◆ */
+    int pos = tick % total_len;
+
+    int dot_x = 0;
+    int dot_y = 0;
+
+    if (dir > 0) { /* Left to Right */
+        tb_set_cell(x2, hook_y, 0x25B2, col | TB_BOLD, th->bg); /* ▲ at end */
+        if (pos <= vert_len_left) {
+            dot_x = x1;
+            dot_y = hook_y + pos;
+        } else if (pos <= vert_len_left + horiz_len) {
+            dot_x = x1 + (pos - vert_len_left);
+            dot_y = box_y + box_h/2;
+        } else {
+            dot_x = x2;
+            dot_y = (box_y + box_h/2) - (pos - vert_len_left - horiz_len);
+        }
+    } else { /* Right to Left */
+        tb_set_cell(x1, hook_y, 0x25B2, col | TB_BOLD, th->bg); /* ▲ at end */
+        if (pos <= vert_len_right) {
+            dot_x = x2;
+            dot_y = hook_y + pos;
+        } else if (pos <= vert_len_right + horiz_len) {
+            dot_x = x2 - (pos - vert_len_right);
+            dot_y = box_y + box_h/2;
+        } else {
+            dot_x = x1;
+            dot_y = (box_y + box_h/2) - (pos - vert_len_right - horiz_len);
+        }
+    }
+
+    /* Only draw dot if it's not hidden behind the center box */
+    if (dot_x < box_x || dot_x > box_x + box_w - 1 || dot_y != box_y + box_h/2) {
+        tb_set_cell(dot_x, dot_y, 0x25C6, col | TB_BOLD, th->bg); /* ◆ */
     }
 }
 
@@ -696,7 +749,7 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
         th
     );
 
-    draw_status_line_lr(
+    draw_status_line_lr_flush(
         x, y+1, w,
         "Master", state.m_m_status,
         "Sync",   state.m_sync,
@@ -704,12 +757,14 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
         th
     );
 
-    int box_w = 34;
+    int box_w = 36;
     int box_h = 4;
     int box_x = x + (w - box_w) / 2;
     int box_y = y + 3;
 
-    draw_box(box_x, box_y, box_w, box_h, th->box1, NULL, th);
+    /* Center box inherits sync status color */
+    uint16_t sync_col = get_status_fg(state.m_sync, th);
+    draw_box(box_x, box_y, box_w, box_h, sync_col, NULL, th);
 
     char buf[MAX_VAL];
     format_shortened_left(buf, sizeof(buf), "M-GTID: ", state.m_m_gtid, box_w - 4);
@@ -718,13 +773,11 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     format_shortened_left(buf, sizeof(buf), "S-GTID: ", state.m_s_gtid, box_w - 4);
     tb_print_fixed(box_x + 2, box_y + 2, th->skip, th->bg, buf, box_w - 4);
 
-    int rail_y = y + 5;
-    int left_hook_x  = x + 2;
-    int right_hook_x = x + w - 3;
+    int hook_y = y + 2;
+    int left_hook_x  = x + 4;
+    int right_hook_x = x + w - 5;
 
-    draw_endpoint_markers(left_hook_x, right_hook_x, rail_y, th);
-    draw_sync_rail(left_hook_x + 1, box_x - 2, rail_y,  1, state.m_sync, th, anim_tick % 40);
-    draw_sync_rail(box_x + box_w + 1, right_hook_x - 1, rail_y, 1, state.m_sync, th, (anim_tick + 11) % 40);
+    draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w, 1, state.m_sync, th, anim_tick % 60);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.m_chk);
     tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
@@ -732,7 +785,6 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 
 void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 {
-    /* Redis: Slave on Left, Master on Right */
     draw_corner_title_box(
         x, y, w, h,
         state.r_s_ep,
@@ -742,7 +794,7 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
         th
     );
 
-    draw_status_line_lr(
+    draw_status_line_lr_flush(
         x, y+1, w,
         "Slave",  state.r_s_status,
         "Repl",   state.r_sync,
@@ -750,12 +802,14 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
         th
     );
 
-    int box_w = 42;
+    int box_w = 44;
     int box_h = 4;
     int box_x = x + (w - box_w) / 2;
     int box_y = y + 3;
 
-    draw_box(box_x, box_y, box_w, box_h, th->box1, NULL, th);
+    /* Center box inherits sync status color */
+    uint16_t sync_col = get_status_fg(state.r_sync, th);
+    draw_box(box_x, box_y, box_w, box_h, sync_col, NULL, th);
 
     char buf[MAX_VAL];
     format_shortened_left(buf, sizeof(buf), "Master sent : ", state.r_det, box_w - 4);
@@ -765,15 +819,12 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
                    "Slave recv  : <placeholder - daemon not wired yet>",
                    box_w - 4);
 
-    int rail_y = y + 5;
-    int left_hook_x  = x + 2;
-    int right_hook_x = x + w - 3;
+    int hook_y = y + 2;
+    int left_hook_x  = x + 4;
+    int right_hook_x = x + w - 5;
 
-    draw_endpoint_markers(left_hook_x, right_hook_x, rail_y, th);
-    
     /* Animation travels from Master (Right) to Slave (Left) */
-    draw_sync_rail(left_hook_x + 1, box_x - 2, rail_y, -1, state.r_sync, th, anim_tick % 40);
-    draw_sync_rail(box_x + box_w + 1, right_hook_x - 1, rail_y, -1, state.r_sync, th, (anim_tick + 11) % 40);
+    draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w, -1, state.r_sync, th, anim_tick % 60);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.r_chk);
     tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
