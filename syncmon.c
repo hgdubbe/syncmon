@@ -676,93 +676,111 @@ void draw_status_line_lr_flush(int x, int y, int w,
     tb_print_custom(right_x + 12, y, th->accent, th->bg, right_label);
 }
 
-void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h, int box_x, int box_w, int dir, const char* status, Theme* th, int tick)
+void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h, int box_x, int box_w, 
+                               int dir, const char* master_status, const char* sync_status, const char* slave_status, 
+                               Theme* th, int tick)
 {
-    uint16_t col = get_status_fg(status, th);
+    uint16_t col = get_status_fg(sync_status, th);
     if (x2 <= x1) return;
+    
+    int rail_y = box_y + box_h / 2;
 
     /* Draw static path (horizontal line passing behind the box) */
     for (int x = x1; x <= x2; x++) {
-        if (x < box_x || x > box_x + box_w - 1) {
-            tb_set_cell(x, box_y + box_h/2, 0x2500, th->skip, th->bg); /* ─ */
+        if (x < box_x || x >= box_x + box_w) {
+            tb_set_cell(x, rail_y, 0x2500, th->skip, th->bg); /* ─ */
         }
     }
     
     /* Draw left and right vertical drops */
-    tb_set_cell(x1, hook_y, 0x2502, th->skip, th->bg); /* │ */
-    tb_set_cell(x1, box_y + box_h/2, 0x2514, th->skip, th->bg); /* └ */
+    /* Ensure no gaps by drawing vertical lines all the way to the hook_y and rail_y */
+    for(int y = hook_y; y < rail_y; y++) {
+        tb_set_cell(x1, y, 0x2502, th->skip, th->bg); /* │ */
+        tb_set_cell(x2, y, 0x2502, th->skip, th->bg); /* │ */
+    }
     
-    tb_set_cell(x2, hook_y, 0x2502, th->skip, th->bg); /* │ */
-    tb_set_cell(x2, box_y + box_h/2, 0x2518, th->skip, th->bg); /* ┘ */
+    tb_set_cell(x1, rail_y, 0x2514, th->skip, th->bg); /* └ */
+    tb_set_cell(x2, rail_y, 0x2518, th->skip, th->bg); /* ┘ */
 
-    /* Calculate total path length */
-    int vert_len_left = (box_y + box_h/2) - hook_y;
-    int vert_len_right = (box_y + box_h/2) - hook_y;
+    /* Animation logic */
+    if (strcmp(master_status, "ERROR") == 0) {
+        /* Master is down, no animation sent */
+        return;
+    }
+
+    int vert_len_left = rail_y - hook_y;
+    int vert_len_right = rail_y - hook_y;
     int horiz_len = x2 - x1;
     int total_len = vert_len_left + horiz_len + vert_len_right;
-
+    
     int pos = tick % total_len;
+    int dot_x = -1, dot_y = -1;
 
-    int dot_x = 0;
-    int dot_y = 0;
+    if (dir > 0) { /* Left to Right (MariaDB) */
+        /* Draw destination arrow only if it can reach */
+        if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
+            tb_set_cell(x2, hook_y, 0x25B2, col | TB_BOLD, th->bg); /* ▲ */
+        }
 
-    if (dir > 0) { /* Left to Right */
-        tb_set_cell(x2, hook_y, 0x25B2, col | TB_BOLD, th->bg); /* ▲ at end */
         if (pos <= vert_len_left) {
             dot_x = x1;
             dot_y = hook_y + pos;
         } else if (pos <= vert_len_left + horiz_len) {
             dot_x = x1 + (pos - vert_len_left);
-            dot_y = box_y + box_h/2;
+            dot_y = rail_y;
         } else {
             dot_x = x2;
-            dot_y = (box_y + box_h/2) - (pos - vert_len_left - horiz_len);
+            dot_y = rail_y - (pos - vert_len_left - horiz_len);
         }
-    } else { /* Right to Left */
-        tb_set_cell(x1, hook_y, 0x25B2, col | TB_BOLD, th->bg); /* ▲ at end */
+        
+        /* If sync/slave error, stop animation at the center box */
+        if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) && dot_x > box_x + box_w/2) {
+            dot_x = -1; /* Hide dot */
+        }
+        
+    } else { /* Right to Left (Redis) */
+        /* Draw destination arrow only if it can reach */
+        if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
+            tb_set_cell(x1, hook_y, 0x25B2, col | TB_BOLD, th->bg); /* ▲ */
+        }
+
         if (pos <= vert_len_right) {
             dot_x = x2;
             dot_y = hook_y + pos;
         } else if (pos <= vert_len_right + horiz_len) {
             dot_x = x2 - (pos - vert_len_right);
-            dot_y = box_y + box_h/2;
+            dot_y = rail_y;
         } else {
             dot_x = x1;
-            dot_y = (box_y + box_h/2) - (pos - vert_len_right - horiz_len);
+            dot_y = rail_y - (pos - vert_len_right - horiz_len);
+        }
+        
+        /* If sync/slave error, stop animation at the center box */
+        if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) && dot_x < box_x + box_w/2) {
+            dot_x = -1; /* Hide dot */
         }
     }
 
-    /* Only draw dot if it's not hidden behind the center box */
-    if (dot_x < box_x || dot_x > box_x + box_w - 1 || dot_y != box_y + box_h/2) {
-        tb_set_cell(dot_x, dot_y, 0x25C6, col | TB_BOLD, th->bg); /* ◆ */
+    /* Draw dot if visible and not behind box */
+    if (dot_x != -1) {
+        if (dot_x < box_x || dot_x >= box_x + box_w || dot_y != rail_y) {
+            tb_set_cell(dot_x, dot_y, 0x25C6, col | TB_BOLD, th->bg); /* ◆ */
+        }
     }
 }
 
 void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 {
-    draw_corner_title_box(
-        x, y, w, h,
-        state.m_m_ep,
-        "◈ MariaDB ◈",
-        state.m_s_ep,
-        th->box2,
-        th
-    );
+    draw_corner_title_box(x, y, w, h, state.m_m_ep, "◈ MariaDB ◈", state.m_s_ep, th->box2, th);
 
-    draw_status_line_lr_flush(
-        x, y+1, w,
-        "Master", state.m_m_status,
-        "Sync",   state.m_sync,
-        state.m_s_status, "Slave",
-        th
-    );
+    /* Labels at y+1 */
+    draw_status_line_lr_flush(x, y+1, w, "Master", state.m_m_status, "Sync", state.m_sync, state.m_s_status, "Slave", th);
 
     int box_w = 36;
     int box_h = 4;
     int box_x = x + (w - box_w) / 2;
-    int box_y = y + 3;
+    int box_y = y + 2; /* Moved up by 1 */
 
-    /* Center box inherits sync status color */
     uint16_t sync_col = get_status_fg(state.m_sync, th);
     draw_box(box_x, box_y, box_w, box_h, sync_col, NULL, th);
 
@@ -773,11 +791,14 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     format_shortened_left(buf, sizeof(buf), "S-GTID: ", state.m_s_gtid, box_w - 4);
     tb_print_fixed(box_x + 2, box_y + 2, th->skip, th->bg, buf, box_w - 4);
 
+    /* Hooks start at y+2 */
     int hook_y = y + 2;
-    int left_hook_x  = x + 4;
-    int right_hook_x = x + w - 5;
+    /* Move hooks inward to align roughly under the badges */
+    int left_hook_x  = x + 7;
+    int right_hook_x = x + w - 8;
 
-    draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w, 1, state.m_sync, th, anim_tick % 60);
+    draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w, 
+                              1, state.m_m_status, state.m_sync, state.m_s_status, th, anim_tick % 60);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.m_chk);
     tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
@@ -785,29 +806,16 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 
 void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 {
-    draw_corner_title_box(
-        x, y, w, h,
-        state.r_s_ep,
-        "◈ Redis ◈",
-        state.r_m_ep,
-        th->box2,
-        th
-    );
+    draw_corner_title_box(x, y, w, h, state.r_s_ep, "◈ Redis ◈", state.r_m_ep, th->box2, th);
 
-    draw_status_line_lr_flush(
-        x, y+1, w,
-        "Slave",  state.r_s_status,
-        "Repl",   state.r_sync,
-        state.r_m_status, "Master",
-        th
-    );
+    /* Labels at y+1 */
+    draw_status_line_lr_flush(x, y+1, w, "Slave", state.r_s_status, "Repl", state.r_sync, state.r_m_status, "Master", th);
 
     int box_w = 44;
     int box_h = 4;
     int box_x = x + (w - box_w) / 2;
-    int box_y = y + 3;
+    int box_y = y + 2; /* Moved up by 1 */
 
-    /* Center box inherits sync status color */
     uint16_t sync_col = get_status_fg(state.r_sync, th);
     draw_box(box_x, box_y, box_w, box_h, sync_col, NULL, th);
 
@@ -819,12 +827,14 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
                    "Slave recv  : <placeholder - daemon not wired yet>",
                    box_w - 4);
 
+    /* Hooks start at y+2 */
     int hook_y = y + 2;
-    int left_hook_x  = x + 4;
-    int right_hook_x = x + w - 5;
+    int left_hook_x  = x + 7;
+    int right_hook_x = x + w - 8;
 
-    /* Animation travels from Master (Right) to Slave (Left) */
-    draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w, -1, state.r_sync, th, anim_tick % 60);
+    /* For Redis, master is on the right, so we pass r_m_status first, then sync, then slave */
+    draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w, 
+                              -1, state.r_m_status, state.r_sync, state.r_s_status, th, anim_tick % 60);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.r_chk);
     tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
@@ -887,11 +897,12 @@ void draw_ui(int anim_tick) {
     draw_node_panel(bx + half, y, half2, 5, SYM_NC " Nextcloud 2", state.nc2_host, state.nc2_ping_status, state.nc2_ping, state.nc2_check, state.nc2_chk, th);
     y += 6;
 
-    draw_mariadb_panel(bx, y, bw, 9, anim_tick, th);
-    y += 10;
+    /* MariaDB and Redis panels are now 8 lines high since we removed the blank line */
+    draw_mariadb_panel(bx, y, bw, 8, anim_tick, th);
+    y += 9;
 
-    draw_redis_panel(bx, y, bw, 9, anim_tick, th);
-    y += 10;
+    draw_redis_panel(bx, y, bw, 8, anim_tick, th);
+    y += 9;
 
     draw_node_panel(bx, y, half, 5, SYM_NFS " NFS", state.nfs_host, state.nfs_ping_status, state.nfs_ping, state.nfs_check, state.nfs_chk, th);
     draw_node_panel(bx + half, y, half2, 5, SYM_DNS " DNS", state.dns_host, state.dns_ping_status, state.dns_ping, state.dns_check, state.dns_chk, th);
