@@ -98,9 +98,8 @@ struct {
     char m_chk[MAX_VAL];
     char m_m_ep[MAX_VAL];
     char m_s_ep[MAX_VAL];
-    
-    char m_m_ping[MAX_VAL]; char m_m_ping_status[MAX_VAL]; char m_m_check[MAX_VAL];
-    char m_s_ping[MAX_VAL]; char m_s_ping_status[MAX_VAL]; char m_s_check[MAX_VAL];
+    char m_m_ping_status[MAX_VAL];
+    char m_s_ping_status[MAX_VAL];
 
     char r_m_status[MAX_VAL];
     char r_s_status[MAX_VAL];
@@ -111,9 +110,8 @@ struct {
     char r_chk[MAX_VAL];
     char r_m_ep[MAX_VAL];
     char r_s_ep[MAX_VAL];
-
-    char r_m_ping[MAX_VAL]; char r_m_ping_status[MAX_VAL]; char r_m_check[MAX_VAL];
-    char r_s_ping[MAX_VAL]; char r_s_ping_status[MAX_VAL]; char r_s_check[MAX_VAL];
+    char r_m_ping_status[MAX_VAL];
+    char r_s_ping_status[MAX_VAL];
 
     char lb_host[MAX_VAL];
     char lb_ping[MAX_VAL];
@@ -199,14 +197,19 @@ int status_to_val(const char* s) {
     if (strcmp(s, "OK") == 0) return 4;
     if (strcmp(s, "WARN") == 0) return 2;
     if (strcmp(s, "ERROR") == 0) return 0;
-    return -2; /* N/A or Error returns -2 to draw bad block */
+    return -1;
 }
 
 int parse_ping_ms(const char* s) {
-    if (!s || !*s || strcmp(s, "N/A") == 0) return -2;
-    if (strstr(s, "timeout") || strstr(s, "unreachable") || strstr(s, "ERROR") || strstr(s, "error")) return -2;
+    if (!s || !*s) return -1;
+    // Map any explicit error strings to a strict -2 so the graph renders a red block instead of a skip
+    if (strstr(s, "ERROR") || strstr(s, "timeout") || strstr(s, "unreachable") || 
+        strstr(s, "down") || strstr(s, "NXDOMAIN") || strstr(s, "503")) {
+        return -2;
+    }
+    if (strcmp(s, "N/A") == 0) return -1;
     while (*s && !isdigit((unsigned char)*s)) s++;
-    if (!*s) return -2;
+    if (!*s) return -1;
     return atoi(s);
 }
 
@@ -310,6 +313,8 @@ void load_state() {
     get_env_or("MYSQL_MASTER_GTID",       "unknown",           state.m_m_gtid,   sizeof(state.m_m_gtid));
     get_env_or("MYSQL_SLAVE_GTID",        "unknown",           state.m_s_gtid,   sizeof(state.m_s_gtid));
     get_env_or("MYSQL_CHECK_TIMESTAMP",   state.timestamp,     state.m_chk,      sizeof(state.m_chk));
+    get_env_or("MYSQL_MASTER_PING_STATUS","N/A",               state.m_m_ping_status, sizeof(state.m_m_ping_status));
+    get_env_or("MYSQL_SLAVE_PING_STATUS", "N/A",               state.m_s_ping_status, sizeof(state.m_s_ping_status));
 
     get_env_or("REDIS_MASTER_STATUS",     "N/A",               state.r_m_status, sizeof(state.r_m_status));
     get_env_or("REDIS_SLAVE_STATUS",      "N/A",               state.r_s_status, sizeof(state.r_s_status));
@@ -318,6 +323,8 @@ void load_state() {
     get_env_or("REDIS_SENT_PAYLOAD",      "(none)",            state.r_sent,     sizeof(state.r_sent));
     get_env_or("REDIS_RECV_PAYLOAD",      "(none)",            state.r_recv,     sizeof(state.r_recv));
     get_env_or("REDIS_CHECK_TIMESTAMP",   state.timestamp,     state.r_chk,      sizeof(state.r_chk));
+    get_env_or("REDIS_MASTER_PING_STATUS","N/A",               state.r_m_ping_status, sizeof(state.r_m_ping_status));
+    get_env_or("REDIS_SLAVE_PING_STATUS", "N/A",               state.r_s_ping_status, sizeof(state.r_s_ping_status));
 
     char mh[64], mp[64], sh[64], sp[64];
     get_env_or("MYSQL_MASTER_HOST", "unknown", mh, sizeof(mh));
@@ -333,17 +340,6 @@ void load_state() {
     get_env_or("REDIS_SLAVE_HOST",  "unknown", sh, sizeof(sh));
     get_env_or("REDIS_SLAVE_PORT",  "?",       sp, sizeof(sp));
     snprintf(state.r_s_ep, sizeof(state.r_s_ep), "%s:%s", sh, sp);
-
-#define LOAD_DB_NODE(pfx, KEY) \
-    get_env_or(KEY "_PING",        "N/A", state.pfx##_ping,        sizeof(state.pfx##_ping)); \
-    get_env_or(KEY "_PING_STATUS", "N/A", state.pfx##_ping_status, sizeof(state.pfx##_ping_status)); \
-    get_env_or(KEY "_CHECK",       "N/A", state.pfx##_check,       sizeof(state.pfx##_check));
-
-    LOAD_DB_NODE(m_m, "MYSQL_MASTER")
-    LOAD_DB_NODE(m_s, "MYSQL_SLAVE")
-    LOAD_DB_NODE(r_m, "REDIS_MASTER")
-    LOAD_DB_NODE(r_s, "REDIS_SLAVE")
-#undef LOAD_DB_NODE
 
 #define LOAD_COMP(pfx, KEY) \
     get_env_or(KEY "_HOST",            "N/A",   state.pfx##_host,        sizeof(state.pfx##_host)); \
@@ -406,18 +402,10 @@ void tb_print_center(int x, int y, uint16_t fg, uint16_t bg, const char *str, in
     tb_print_custom(x + pad, y, fg, bg, str);
 }
 
-void tb_print_right(int x, int y, uint16_t fg, uint16_t bg, const char *str, int w) {
-    int len = 0;
-    const char *p = str;
-    while (*p) {
-        uint32_t u;
-        p += tb_utf8_char_to_unicode(&u, p);
-        len++;
+void draw_vertical_text(int x, int y, const char* str, uint16_t fg, uint16_t bg) {
+    for (int i = 0; str[i] != '\0'; i++) {
+        tb_set_cell(x, y + i, str[i], fg, bg);
     }
-    int pad = w - len;
-    if (pad < 0) pad = 0;
-    tb_print_fixed(x, y, fg, bg, "", pad);
-    tb_print_custom(x + pad, y, fg, bg, str);
 }
 
 void tb_fill(int x, int y, int w, int h, uint16_t fg, uint16_t bg) {
@@ -460,16 +448,13 @@ void draw_box(int x, int y, int w, int h, uint16_t fg, const char* title, Theme*
         int tl = 0;
         const char* tp = title;
         while (*tp) { uint32_t u; tp += tb_utf8_char_to_unicode(&u, tp); tl++; }
-        int tx = x + (w - tl) / 2; // Fixed perfect alignment
-        if (tx < x + 1) tx = x + 1;
+        int tx = x + (w - tl) / 2;
 
-        tb_set_cell(tx-2, y, ' ', th->bg, th->bg);
-        tb_set_cell(tx-1, y, 0x25C8, th->accent, th->bg);
-        tb_set_cell(tx,   y, ' ', th->bg, th->bg);
-        tb_print_custom(tx+1, y, th->hdr_fg|TB_BOLD, th->bg, title);
-        tb_set_cell(tx+1+tl,   y, ' ', th->bg, th->bg);
-        tb_set_cell(tx+1+tl+1, y, 0x25C8, th->accent, th->bg);
-        tb_set_cell(tx+1+tl+2, y, ' ', th->bg, th->bg);
+        tb_set_cell(tx - 2, y, 0x25C8, th->accent, th->bg);
+        tb_set_cell(tx - 1, y, ' ', th->bg, th->bg);
+        tb_print_custom(tx, y, th->hdr_fg|TB_BOLD, th->bg, title);
+        tb_set_cell(tx + tl, y, ' ', th->bg, th->bg);
+        tb_set_cell(tx + tl + 1, y, 0x25C8, th->accent, th->bg);
     }
 }
 
@@ -482,17 +467,18 @@ void draw_corner_title_box(int x, int y, int w, int h,
 {
     draw_box(x, y, w, h, fg, NULL, th);
 
-    int ll = (int)strlen(left_title);
-    int cl = (int)strlen(center_title);
-    int rl = (int)strlen(right_title);
+    int cl = 0;
+    const char* tp = center_title;
+    while (*tp) { uint32_t u; tp += tb_utf8_char_to_unicode(&u, tp); cl++; }
+    int cx = x + (w - cl) / 2; // Perfectly center the primary header
 
-    int cx = x + (w - cl) / 2; // Fixed perfect alignment
-    if (cx < x + ll + 4) cx = x + ll + 4;
-
+    int rl = 0;
+    tp = right_title;
+    while (*tp) { uint32_t u; tp += tb_utf8_char_to_unicode(&u, tp); rl++; }
     int rx = x + w - rl - 2;
-    if (rx < cx + cl + 4) rx = cx + cl + 4;
 
-    tb_print_custom(x + 1, y, th->fg, th->bg, left_title);
+    // Use uniform fg color for IP addresses, rendering them left/right 
+    tb_print_custom(x + 2, y, th->fg, th->bg, left_title);
     tb_print_custom(cx,    y, th->hdr_fg | TB_BOLD, th->bg, center_title);
     tb_print_custom(rx,    y, th->fg, th->bg, right_title);
 }
@@ -559,7 +545,7 @@ void draw_status_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
         int v = hd[idx];
 
         if (v == -1) { tb_set_cell(x+c, y, 0x2508, th->skip, th->bg); continue; }
-        if (v <= 0)  { tb_set_cell(x+c, y, 0x2588, th->err|TB_BOLD, th->bg); continue; }
+        if (v == 0)  { tb_set_cell(x+c, y, 0x2588, th->err|TB_BOLD, th->bg); continue; }
 
         uint16_t col = (v == 2) ? th->warn : th->ok;
         if (config.use_braille) tb_set_cell(x+c, y, braille_bar(v, v), col, th->bg);
@@ -581,7 +567,7 @@ void draw_ping_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
             tb_set_cell(x+c, y, 0x2508, th->skip, th->bg);
             continue;
         }
-        if (v < 0) {
+        if (v < 0) { // Now catches strict errors (-2) pushed by parse_ping_ms 
             tb_set_cell(x+c, y, 0x2588, th->err|TB_BOLD, th->bg);
             continue;
         }
@@ -637,18 +623,6 @@ void draw_theme_menu(Theme* th) {
     }
 }
 
-void draw_mini_node(int x, int y, int w, const char* ping_status, const char* ping, const char* check, Theme* th) {
-    tb_print_custom(x, y, th->accent, th->bg, "Ping:");
-    draw_badge(x+6, y, ping_status, th);
-    tb_print_fixed(x+16, y, get_status_fg(ping_status, th), th->bg, ping, w - 16);
-
-    char chk_status[16];
-    derive_check_status(check, chk_status, sizeof(chk_status));
-    tb_print_custom(x, y+1, th->accent, th->bg, "Chk :");
-    draw_badge(x+6, y+1, chk_status, th);
-    tb_print_fixed(x+16, y+1, get_status_fg(chk_status, th), th->bg, check, w - 16);
-}
-
 void draw_node_panel(int x, int y, int w, int h,
                      const char* title,
                      const char* host,
@@ -658,14 +632,13 @@ void draw_node_panel(int x, int y, int w, int h,
                      const char* chk_ts,
                      Theme* th) {
 
-    char full_title[256];
+    draw_box(x, y, w, h, th->box2, title, th);
+    
+    // Position IP directly on the top border on the far right in standard foreground color
     if (host && host[0] != '\0' && strcmp(host, "N/A") != 0) {
-        snprintf(full_title, sizeof(full_title), "%s : %s", title, host);
-    } else {
-        snprintf(full_title, sizeof(full_title), "%s", title);
+        int hl = strlen(host);
+        tb_print_custom(x + w - hl - 2, y, th->fg, th->bg, host);
     }
-
-    draw_box(x, y, w, h, th->box2, full_title, th);
 
     int bar_w = 10;
     int label_x = x + 2;
@@ -691,32 +664,6 @@ void draw_node_panel(int x, int y, int w, int h,
     char buf[MAX_VAL];
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, chk_ts);
     tb_print_fixed(label_x, y+3, th->skip, th->bg, buf, w-4);
-}
-
-void draw_status_line_lr_flush(int x, int y, int w,
-                         const char* left_label,
-                         const char* left_status,
-                         const char* mid_label,
-                         const char* mid_status,
-                         const char* right_status,
-                         const char* right_label,
-                         Theme* th)
-{
-    int left_x  = x + 2;
-    int mid_x   = x + (w / 2) - 10;
-    int right_x = x + w - 20;
-
-    tb_print_custom(left_x, y, th->accent, th->bg, left_label);
-    tb_print_custom(left_x + strlen(left_label) + 1, y, th->fg, th->bg, ":");
-    draw_badge(left_x + strlen(left_label) + 3, y, left_status, th);
-
-    tb_print_custom(mid_x, y, th->accent, th->bg, mid_label);
-    tb_print_custom(mid_x + 7, y, th->fg, th->bg, ":");
-    draw_badge(mid_x + 9, y, mid_status, th);
-
-    draw_badge(right_x, y, right_status, th);
-    tb_print_custom(right_x + 10, y, th->fg, th->bg, ":");
-    tb_print_custom(right_x + 12, y, th->accent, th->bg, right_label);
 }
 
 void draw_continuous_sync_path(int x1, int x2, int hook_y,
@@ -817,26 +764,29 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 {
     draw_corner_title_box(x, y, w, h, state.m_m_ep, "◈ MariaDB ◈", state.m_s_ep, th->box2, th);
 
-    draw_status_line_lr_flush(x, y+1, w, "Status", state.m_m_status, "Sync", state.m_sync, state.m_s_status, "Status", th);
+    // Left Side: Master Details
+    draw_vertical_text(x + 2, y + 1, "Master", th->accent, th->bg);
+    tb_print_custom(x + 4, y + 1, th->accent, th->bg, "Ping :");
+    draw_badge(x + 11, y + 1, state.m_m_ping_status, th);
+    tb_print_custom(x + 4, y + 2, th->accent, th->bg, "Check:");
+    draw_badge(x + 11, y + 2, state.m_m_status, th);
 
-    draw_mini_node(x + 4, y + 2, 35, state.m_m_ping_status, state.m_m_ping, state.m_m_check, th);
-    draw_mini_node(x + w - 39, y + 2, 35, state.m_s_ping_status, state.m_s_ping, state.m_s_check, th);
+    // Right Side: Slave Details
+    draw_vertical_text(x + w - 3, y + 1, "Slave", th->accent, th->bg);
+    tb_print_custom(x + w - 20, y + 1, th->accent, th->bg, "Ping :");
+    draw_badge(x + w - 13, y + 1, state.m_s_ping_status, th);
+    tb_print_custom(x + w - 20, y + 2, th->accent, th->bg, "Check:");
+    draw_badge(x + w - 13, y + 2, state.m_s_status, th);
 
-    const char* m_str = "MASTER";
-    for (int i = 0; i < 6; i++) {
-        char c[2] = {m_str[i], 0};
-        tb_print_custom(x + 2, y + 2 + i, th->accent, th->bg, c);
-    }
-    const char* s_str = "SLAVE";
-    for (int i = 0; i < 5; i++) {
-        char c[2] = {s_str[i], 0};
-        tb_print_custom(x + w - 3, y + 2 + i, th->accent, th->bg, c);
-    }
+    // Center: Sync Details
+    tb_print_custom(x + (w / 2) - 10, y + 1, th->accent, th->bg, "Sync");
+    tb_print_custom(x + (w / 2) - 5, y + 1, th->fg, th->bg, ":");
+    draw_badge(x + (w / 2) - 3, y + 1, state.m_sync, th);
 
     int box_w = 36;
     int box_h = 4;
     int box_x = x + (w - box_w) / 2;
-    int box_y = y + 5;
+    int box_y = y + 2;
 
     uint16_t sync_col = get_status_fg(state.m_sync, th);
     draw_box(box_x, box_y, box_w, box_h, sync_col, NULL, th);
@@ -845,16 +795,21 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     format_shortened_left(buf, sizeof(buf), "M-GTID: ", state.m_m_gtid, box_w - 4);
     tb_print_fixed(box_x + 2, box_y + 1, th->skip, th->bg, buf, box_w - 4);
 
-    int gtid_match = (strcmp(state.m_m_gtid, state.m_s_gtid) == 0 && strcmp(state.m_m_gtid, "unknown") != 0);
-    uint16_t s_gtid_col = gtid_match ? th->ok : th->warn;
-    if (strcmp(state.m_s_status, "ERROR") == 0 || strcmp(state.m_s_gtid, "unknown") == 0) s_gtid_col = th->err;
+    // Color S-GTID based on match to M-GTID or global error condition
+    int gtid_match = (strcmp(state.m_m_gtid, state.m_s_gtid) == 0 && 
+                      strcmp(state.m_m_gtid, "unknown") != 0 && strcmp(state.m_m_gtid, "N/A") != 0);
+    uint16_t sgtid_col = gtid_match ? th->ok : th->warn;
+    if (strcmp(state.m_s_status, "ERROR") == 0 || strcmp(state.m_s_gtid, "unknown") == 0) {
+        sgtid_col = th->err;
+    }
 
     format_shortened_left(buf, sizeof(buf), "S-GTID: ", state.m_s_gtid, box_w - 4);
-    tb_print_fixed(box_x + 2, box_y + 2, s_gtid_col, th->bg, buf, box_w - 4);
+    tb_print_fixed(box_x + 2, box_y + 2, sgtid_col, th->bg, buf, box_w - 4);
 
-    int hook_y = y + 4;
-    int left_hook_x  = x + 10;
-    int right_hook_x = x + w - 11;
+    // Push the wire hooks further out so they don't overlay the badges
+    int hook_y = y + 2;
+    int left_hook_x  = x + 21;
+    int right_hook_x = x + w - 22;
 
     draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w,
                               1, state.m_m_status, state.m_sync, state.m_s_status, th, anim_tick);
@@ -865,34 +820,37 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 
 void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 {
-    // Redis has slave on left, master on right based on EP mapping
     draw_corner_title_box(x, y, w, h, state.r_s_ep, "◈ Redis ◈", state.r_m_ep, th->box2, th);
 
-    draw_status_line_lr_flush(x, y+1, w, "Status", state.r_s_status, "Repl", state.r_sync, state.r_m_status, "Status", th);
+    // Left Side: Slave Details (Redis standard topology has Slave on left)
+    draw_vertical_text(x + 2, y + 1, "Slave", th->accent, th->bg);
+    tb_print_custom(x + 4, y + 1, th->accent, th->bg, "Ping :");
+    draw_badge(x + 11, y + 1, state.r_s_ping_status, th);
+    tb_print_custom(x + 4, y + 2, th->accent, th->bg, "Check:");
+    draw_badge(x + 11, y + 2, state.r_s_status, th);
 
-    draw_mini_node(x + 4, y + 2, 35, state.r_s_ping_status, state.r_s_ping, state.r_s_check, th);
-    draw_mini_node(x + w - 39, y + 2, 35, state.r_m_ping_status, state.r_m_ping, state.r_m_check, th);
+    // Right Side: Master Details
+    draw_vertical_text(x + w - 3, y + 1, "Master", th->accent, th->bg);
+    tb_print_custom(x + w - 20, y + 1, th->accent, th->bg, "Ping :");
+    draw_badge(x + w - 13, y + 1, state.r_m_ping_status, th);
+    tb_print_custom(x + w - 20, y + 2, th->accent, th->bg, "Check:");
+    draw_badge(x + w - 13, y + 2, state.r_m_status, th);
 
-    const char* s_str = "SLAVE";
-    for (int i = 0; i < 5; i++) {
-        char c[2] = {s_str[i], 0};
-        tb_print_custom(x + 2, y + 2 + i, th->accent, th->bg, c);
-    }
-    const char* m_str = "MASTER";
-    for (int i = 0; i < 6; i++) {
-        char c[2] = {m_str[i], 0};
-        tb_print_custom(x + w - 3, y + 2 + i, th->accent, th->bg, c);
-    }
+    // Center: Replication Details
+    tb_print_custom(x + (w / 2) - 10, y + 1, th->accent, th->bg, "Repl");
+    tb_print_custom(x + (w / 2) - 5, y + 1, th->fg, th->bg, ":");
+    draw_badge(x + (w / 2) - 3, y + 1, state.r_sync, th);
 
     int box_w = 44;
     int box_h = 4;
     int box_x = x + (w - box_w) / 2;
-    int box_y = y + 5;
+    int box_y = y + 2;
 
     uint16_t sync_col = get_status_fg(state.r_sync, th);
     draw_box(box_x, box_y, box_w, box_h, sync_col, NULL, th);
 
     char buf[MAX_VAL];
+
     format_shortened_left(buf, sizeof(buf), "Sent : ", state.r_sent, box_w - 4);
     tb_print_fixed(box_x + 2, box_y + 1, th->skip, th->bg, buf, box_w - 4);
 
@@ -906,9 +864,9 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     format_shortened_left(buf, sizeof(buf), "Recv : ", state.r_recv, box_w - 4);
     tb_print_fixed(box_x + 2, box_y + 2, recv_col, th->bg, buf, box_w - 4);
 
-    int hook_y = y + 4;
-    int left_hook_x  = x + 10;
-    int right_hook_x = x + w - 11;
+    int hook_y = y + 2;
+    int left_hook_x  = x + 21;
+    int right_hook_x = x + w - 22;
 
     draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w,
                               -1, state.r_m_status, state.r_sync, state.r_s_status, th, anim_tick);
@@ -958,11 +916,11 @@ void draw_ui(int anim_tick) {
     draw_node_panel(bx + half, y, half2, 5, SYM_NC " Nextcloud 2", state.nc2_host, state.nc2_ping_status, state.nc2_ping, state.nc2_check, state.nc2_chk, th);
     y += 6;
 
-    draw_mariadb_panel(bx, y, bw, 11, anim_tick, th);
-    y += 12;
+    draw_mariadb_panel(bx, y, bw, 8, anim_tick, th);
+    y += 9;
 
-    draw_redis_panel(bx, y, bw, 11, anim_tick, th);
-    y += 12;
+    draw_redis_panel(bx, y, bw, 8, anim_tick, th);
+    y += 9;
 
     draw_node_panel(bx, y, half, 5, SYM_NFS " NFS", state.nfs_host, state.nfs_ping_status, state.nfs_ping, state.nfs_check, state.nfs_chk, th);
     draw_node_panel(bx + half, y, half2, 5, SYM_DNS " DNS", state.dns_host, state.dns_ping_status, state.dns_ping, state.dns_check, state.dns_chk, th);
