@@ -408,6 +408,38 @@ uint16_t get_status_fg(const char* s, Theme* th) {
     return th->skip;
 }
 
+/*
+ * draw_box_wave: draws the bottom border of a box with a travelling sine-like
+ * wave through the horizontal line characters, to symbolise the dot squeezing
+ * through.  wave_pos is the position of the wave peak (0 = left edge, box_w-1
+ * = right edge).  When wave_pos < 0 the function draws a normal flat border.
+ */
+static void draw_box_wave(int x, int y_bottom, int box_w, uint16_t fg, uint16_t bg,
+                          int wave_pos)
+{
+    /* Wave shape: the "peak" cell uses a heavy block ━ (U+2501),
+       the two neighbours use light wavy ≈ (U+2248 repurposed as
+       a wave symbol), everything else stays ─ (U+2500).
+       Corner cells are left untouched.                              */
+    for (int i = 1; i < box_w - 1; i++) {
+        int d = i - wave_pos;
+        uint32_t ch;
+        uint16_t wfg = fg;
+        if (d == 0) {
+            ch   = 0x2501;   /* ━ heavy horizontal */
+            wfg  = fg | TB_BOLD;
+        } else if (d == -1 || d == 1) {
+            ch   = 0x2508;   /* ┈ light quadruple-dash (dip) */
+            wfg  = fg | TB_BOLD;
+        } else if (d == -2 || d == 2) {
+            ch   = 0x2504;   /* ┄ light triple-dash (ripple) */
+        } else {
+            ch   = 0x2500;   /* ─ normal */
+        }
+        tb_set_cell(x + i, y_bottom, ch, wfg, bg);
+    }
+}
+
 void draw_box(int x, int y, int w, int h, uint16_t fg, const char* title, Theme* th) {
     tb_set_cell(x,     y,     0x256D, fg, th->bg);
     tb_set_cell(x+w-1, y,     0x256E, fg, th->bg);
@@ -438,6 +470,18 @@ void draw_box(int x, int y, int w, int h, uint16_t fg, const char* title, Theme*
         tb_set_cell(tx+3+tl+1, y, 0x25C8, th->accent, th->bg);
         tb_set_cell(tx+3+tl+2, y, ' ', th->bg, th->bg);
     }
+}
+
+/*
+ * draw_box_with_wave: same as draw_box but animates the bottom border.
+ * wave_pos < 0 → no wave (normal static border).
+ */
+static void draw_box_with_wave(int x, int y, int w, int h, uint16_t fg,
+                               const char* title, Theme* th, int wave_pos)
+{
+    draw_box(x, y, w, h, fg, title, th);
+    if (wave_pos >= 0)
+        draw_box_wave(x, y + h - 1, w, fg, th->bg, wave_pos);
 }
 
 void draw_corner_title_box(int x, int y, int w, int h,
@@ -715,6 +759,15 @@ void draw_endpoint_status_right(int px, int pw, int py,
     *hook_y = py + 2;
 }
 
+/*
+ * draw_sync_path_between_hooks
+ *
+ * Changes vs original:
+ *  1. Arrow fix: arrowhead placed at the last cell immediately before the
+ *     status box (x2-1 for dir>0, x1+1 for dir<0) rather than x2-2 / x1+2.
+ *  2. Wave animation: while the dot is inside the tunnel (tunnel_delay phase)
+ *     the bottom border of the status box is animated with draw_box_wave.
+ */
 void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
                                   int box_x, int box_y, int box_w, int box_h,
                                   int dir,
@@ -732,35 +785,50 @@ void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
     if (left_gap  < 0) left_gap  = 0;
     if (right_gap < 0) right_gap = 0;
 
+    /* vertical stems */
     for (int y = hook_y; y < rail_y; y++) {
         tb_set_cell(x1, y, 0x2502, th->skip, th->bg);
         tb_set_cell(x2, y, 0x2502, th->skip, th->bg);
     }
 
+    /* corners */
     tb_set_cell(x1, rail_y, 0x2514, th->skip, th->bg);
     tb_set_cell(x2, rail_y, 0x2518, th->skip, th->bg);
 
+    /* horizontal rails (skip over box) */
     for (int x = x1 + 1; x < x2; x++) {
         if (x < box_x || x >= box_x + box_w)
             tb_set_cell(x, rail_y, 0x2500, th->skip, th->bg);
     }
 
+    /* ── FIX: arrowhead at the last cell ADJACENT to the box ── */
     if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
-        if (dir > 0 && x2 - 1 > box_x + box_w)
-            tb_set_cell(x2 - 1, rail_y, 0x25B6, col | TB_BOLD, th->bg);
-        else if (dir < 0 && x1 + 1 < box_x)
-            tb_set_cell(x1 + 1, rail_y, 0x25C0, col | TB_BOLD, th->bg);
+        if (dir > 0) {
+            /* arrow points right → place ▶ at the cell just before the box */
+            int arr_x = box_x - 1;
+            if (arr_x > x1)
+                tb_set_cell(arr_x, rail_y, 0x25B6, col | TB_BOLD, th->bg);
+        } else {
+            /* arrow points left → place ◀ at the cell just after the box */
+            int arr_x = box_x + box_w;
+            if (arr_x < x2)
+                tb_set_cell(arr_x, rail_y, 0x25C0, col | TB_BOLD, th->bg);
+        }
     }
 
     if (strcmp(master_status, "ERROR") == 0) return;
 
-    int vert_len = rail_y - hook_y;
+    int vert_len     = rail_y - hook_y;
     int tunnel_delay = (box_w > 36) ? (box_w - 36) : 0;
-    int total_len = vert_len + left_gap + tunnel_delay + right_gap + vert_len;
+    int total_len    = vert_len + left_gap + tunnel_delay + right_gap + vert_len;
     if (total_len <= 0) return;
 
-    int pos = tick % total_len;
+    int pos   = tick % total_len;
     int dot_x = -1, dot_y = -1;
+
+    /* track whether the dot is inside the tunnel this frame */
+    int in_tunnel = 0;
+    int tunnel_phase_pos = 0; /* position within the tunnel [0, tunnel_delay) */
 
     if (dir > 0) {
         if (pos < vert_len) {
@@ -770,6 +838,8 @@ void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
             dot_x = x1 + (pos - vert_len);
             dot_y = rail_y;
         } else if (pos < vert_len + left_gap + tunnel_delay) {
+            in_tunnel        = 1;
+            tunnel_phase_pos = pos - vert_len - left_gap;
             dot_x = -1;
             dot_y = -1;
         } else if (pos < vert_len + left_gap + tunnel_delay + right_gap) {
@@ -791,6 +861,8 @@ void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
             dot_x = x2 - (pos - vert_len);
             dot_y = rail_y;
         } else if (pos < vert_len + right_gap + tunnel_delay) {
+            in_tunnel        = 1;
+            tunnel_phase_pos = pos - vert_len - right_gap;
             dot_x = -1;
             dot_y = -1;
         } else if (pos < vert_len + right_gap + tunnel_delay + left_gap) {
@@ -804,6 +876,28 @@ void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
         if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) &&
             dot_x > -1 && dot_x < box_x + box_w / 2)
             dot_x = -1;
+    }
+
+    /* ── Wave animation when dot is inside the box ── */
+    if (in_tunnel && tunnel_delay > 0) {
+        /*
+         * Map tunnel_phase_pos (0…tunnel_delay-1) onto the interior width of
+         * the box bottom border (1…box_w-2), so the wave sweeps left-to-right
+         * for dir>0 and right-to-left for dir<0.
+         */
+        int interior = box_w - 2;  /* cells between corners */
+        int wave_interior_pos;
+        if (dir > 0)
+            wave_interior_pos = (tunnel_phase_pos * interior) / (tunnel_delay > 1 ? tunnel_delay - 1 : 1);
+        else
+            wave_interior_pos = interior - 1 - (tunnel_phase_pos * interior) / (tunnel_delay > 1 ? tunnel_delay - 1 : 1);
+
+        /* clamp */
+        if (wave_interior_pos < 0) wave_interior_pos = 0;
+        if (wave_interior_pos >= interior) wave_interior_pos = interior - 1;
+
+        /* wave_pos passed to draw_box_wave is relative to cell (box_x+1) */
+        draw_box_wave(box_x, box_y + box_h - 1, box_w, col, th->bg, wave_interior_pos + 1);
     }
 
     if (dot_x != -1 && dot_y != -1)
