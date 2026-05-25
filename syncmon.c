@@ -470,14 +470,13 @@ void draw_corner_title_box(int x, int y, int w, int h,
     int cl = 0;
     const char* tp = center_title;
     while (*tp) { uint32_t u; tp += tb_utf8_char_to_unicode(&u, tp); cl++; }
-    int cx = x + (w - cl) / 2; // Perfectly center the primary header
+    int cx = x + (w - cl) / 2;
 
     int rl = 0;
     tp = right_title;
     while (*tp) { uint32_t u; tp += tb_utf8_char_to_unicode(&u, tp); rl++; }
     int rx = x + w - rl - 2;
 
-    // Use uniform fg color for IP addresses, rendering them left/right 
     tb_print_custom(x + 2, y, th->fg, th->bg, left_title);
     tb_print_custom(cx,    y, th->hdr_fg | TB_BOLD, th->bg, center_title);
     tb_print_custom(rx,    y, th->fg, th->bg, right_title);
@@ -567,7 +566,7 @@ void draw_ping_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
             tb_set_cell(x+c, y, 0x2508, th->skip, th->bg);
             continue;
         }
-        if (v < 0) { // Now catches strict errors (-2) pushed by parse_ping_ms 
+        if (v < 0) { 
             tb_set_cell(x+c, y, 0x2588, th->err|TB_BOLD, th->bg);
             continue;
         }
@@ -634,7 +633,6 @@ void draw_node_panel(int x, int y, int w, int h,
 
     draw_box(x, y, w, h, th->box2, title, th);
     
-    // Position IP directly on the top border on the far right in standard foreground color
     if (host && host[0] != '\0' && strcmp(host, "N/A") != 0) {
         int hl = strlen(host);
         tb_print_custom(x + w - hl - 2, y, th->fg, th->bg, host);
@@ -693,6 +691,17 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y,
 
     if (strcmp(master_status, "ERROR") == 0) return;
 
+    /* Optional direction indicator at top with corner rounding to point horizontally */
+    if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
+        if (dir > 0) {
+            tb_set_cell(x2, hook_y, 0x2570, th->skip, th->bg); // ╰
+            tb_set_cell(x2 + 1, hook_y, 0x25B6, col | TB_BOLD, th->bg); // ▶
+        } else {
+            tb_set_cell(x1, hook_y, 0x256F, th->skip, th->bg); // ╯
+            tb_set_cell(x1 - 1, hook_y, 0x25C0, col | TB_BOLD, th->bg); // ◀
+        }
+    }
+
     int vert_len  = rail_y - hook_y;
     int left_gap  = box_x - x1;
     int right_gap = x2 - (box_x + box_w) + 1;
@@ -702,11 +711,6 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y,
     int tunnel_delay = (box_w > 36) ? (box_w - 36) : 0;
     int total_len = vert_len + left_gap + tunnel_delay + right_gap + vert_len;
     if (total_len <= 0) return;
-
-    if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
-        if (dir > 0) tb_set_cell(x2, hook_y, 0x25B2, col | TB_BOLD, th->bg);
-        else         tb_set_cell(x1, hook_y, 0x25B2, col | TB_BOLD, th->bg);
-    }
 
     int pos = tick % total_len;
     int dot_x = -1, dot_y = -1;
@@ -764,21 +768,18 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 {
     draw_corner_title_box(x, y, w, h, state.m_m_ep, "◈ MariaDB ◈", state.m_s_ep, th->box2, th);
 
-    // Left Side: Master Details
     draw_vertical_text(x + 2, y + 1, "Master", th->accent, th->bg);
     tb_print_custom(x + 4, y + 1, th->accent, th->bg, "Ping :");
     draw_badge(x + 11, y + 1, state.m_m_ping_status, th);
     tb_print_custom(x + 4, y + 2, th->accent, th->bg, "Check:");
     draw_badge(x + 11, y + 2, state.m_m_status, th);
 
-    // Right Side: Slave Details
     draw_vertical_text(x + w - 3, y + 1, "Slave", th->accent, th->bg);
     tb_print_custom(x + w - 20, y + 1, th->accent, th->bg, "Ping :");
     draw_badge(x + w - 13, y + 1, state.m_s_ping_status, th);
     tb_print_custom(x + w - 20, y + 2, th->accent, th->bg, "Check:");
     draw_badge(x + w - 13, y + 2, state.m_s_status, th);
 
-    // Center: Sync Details
     tb_print_custom(x + (w / 2) - 10, y + 1, th->accent, th->bg, "Sync");
     tb_print_custom(x + (w / 2) - 5, y + 1, th->fg, th->bg, ":");
     draw_badge(x + (w / 2) - 3, y + 1, state.m_sync, th);
@@ -795,7 +796,6 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     format_shortened_left(buf, sizeof(buf), "M-GTID: ", state.m_m_gtid, box_w - 4);
     tb_print_fixed(box_x + 2, box_y + 1, th->skip, th->bg, buf, box_w - 4);
 
-    // Color S-GTID based on match to M-GTID or global error condition
     int gtid_match = (strcmp(state.m_m_gtid, state.m_s_gtid) == 0 && 
                       strcmp(state.m_m_gtid, "unknown") != 0 && strcmp(state.m_m_gtid, "N/A") != 0);
     uint16_t sgtid_col = gtid_match ? th->ok : th->warn;
@@ -806,7 +806,6 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     format_shortened_left(buf, sizeof(buf), "S-GTID: ", state.m_s_gtid, box_w - 4);
     tb_print_fixed(box_x + 2, box_y + 2, sgtid_col, th->bg, buf, box_w - 4);
 
-    // Push the wire hooks further out so they don't overlay the badges
     int hook_y = y + 2;
     int left_hook_x  = x + 21;
     int right_hook_x = x + w - 22;
@@ -815,28 +814,25 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
                               1, state.m_m_status, state.m_sync, state.m_s_status, th, anim_tick);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.m_chk);
-    tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
+    tb_print_fixed(x + 4, y + h - 2, th->skip, th->bg, buf, w - 8);
 }
 
 void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 {
     draw_corner_title_box(x, y, w, h, state.r_s_ep, "◈ Redis ◈", state.r_m_ep, th->box2, th);
 
-    // Left Side: Slave Details (Redis standard topology has Slave on left)
     draw_vertical_text(x + 2, y + 1, "Slave", th->accent, th->bg);
     tb_print_custom(x + 4, y + 1, th->accent, th->bg, "Ping :");
     draw_badge(x + 11, y + 1, state.r_s_ping_status, th);
     tb_print_custom(x + 4, y + 2, th->accent, th->bg, "Check:");
     draw_badge(x + 11, y + 2, state.r_s_status, th);
 
-    // Right Side: Master Details
     draw_vertical_text(x + w - 3, y + 1, "Master", th->accent, th->bg);
     tb_print_custom(x + w - 20, y + 1, th->accent, th->bg, "Ping :");
     draw_badge(x + w - 13, y + 1, state.r_m_ping_status, th);
     tb_print_custom(x + w - 20, y + 2, th->accent, th->bg, "Check:");
     draw_badge(x + w - 13, y + 2, state.r_m_status, th);
 
-    // Center: Replication Details
     tb_print_custom(x + (w / 2) - 10, y + 1, th->accent, th->bg, "Repl");
     tb_print_custom(x + (w / 2) - 5, y + 1, th->fg, th->bg, ":");
     draw_badge(x + (w / 2) - 3, y + 1, state.r_sync, th);
@@ -872,7 +868,7 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
                               -1, state.r_m_status, state.r_sync, state.r_s_status, th, anim_tick);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.r_chk);
-    tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
+    tb_print_fixed(x + 4, y + h - 2, th->skip, th->bg, buf, w - 8);
 }
 
 void draw_ui(int anim_tick) {
