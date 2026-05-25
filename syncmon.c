@@ -693,14 +693,14 @@ void draw_status_line_lr_flush(int x, int y, int w,
 /*
  * draw_continuous_sync_path
  *
- * FIX: The animated dot (◆) was not appearing on the vertical segment
- * leading up to the slave panel.  The old guard suppressed the dot
- * whenever dot_y != rail_y AND the dot was NOT outside the sync-info box
- * horizontally – but that logic was wrong for the vertical legs.
+ * The animated dot travels a closed loop:
+ *   Phase 1 – descend the left/master vertical leg  (vert_len steps)
+ *   Phase 2 – traverse the horizontal rail           (horiz_len steps)
+ *   Phase 3 – ascend the right/slave vertical leg    (vert_len steps)
  *
- * The correct rule is simply: don't draw the dot when it would land
- * *inside* the sync-info box (any row, any column of the box rectangle).
- * Everywhere else – including both vertical segments – it must be drawn.
+ * IMPORTANT: tick must NOT be pre-capped to a small value by the caller;
+ * the modulo is applied here against the real total_len so that all three
+ * phases are reachable regardless of path geometry.
  */
 void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h, int box_x, int box_w,
                                int dir, const char* master_status, const char* sync_status, const char* slave_status,
@@ -731,11 +731,13 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h,
     /* No animation when master is completely down */
     if (strcmp(master_status, "ERROR") == 0) return;
 
-    int vert_len = rail_y - hook_y;   /* same on both sides */
-    int horiz_len = x2 - x1;
+    int vert_len  = rail_y - hook_y;   /* number of rows in each vertical leg */
+    int horiz_len = x2 - x1;           /* number of columns in horizontal leg  */
     int total_len = vert_len + horiz_len + vert_len;
 
-    int pos = tick % total_len;
+    if (total_len <= 0) return;
+
+    int pos = tick % total_len;        /* modulo applied HERE with the real length */
     int dot_x = -1, dot_y = -1;
 
     if (dir > 0) {
@@ -826,8 +828,9 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     int left_hook_x  = x + 7;
     int right_hook_x = x + w - 8;
 
+    /* Pass anim_tick directly — do NOT cap with % 60 */
     draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w,
-                              1, state.m_m_status, state.m_sync, state.m_s_status, th, anim_tick % 60);
+                              1, state.m_m_status, state.m_sync, state.m_s_status, th, anim_tick);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.m_chk);
     tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
@@ -866,8 +869,9 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     int left_hook_x  = x + 7;
     int right_hook_x = x + w - 8;
 
+    /* Pass anim_tick directly — do NOT cap with % 60 */
     draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w,
-                              -1, state.r_m_status, state.r_sync, state.r_s_status, th, anim_tick % 60);
+                              -1, state.r_m_status, state.r_sync, state.r_s_status, th, anim_tick);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.r_chk);
     tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
