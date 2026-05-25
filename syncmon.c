@@ -267,7 +267,7 @@ static void compute_ai_analysis() {
         snprintf(ai_line2, sizeof(ai_line2), "Redis replication degraded - inspect payload handoff");
 
     char parts[MAX_VAL] = "";
-    if (strcmp(state.lb_ping_status, "OK") != strncat(parts, "LoadBalancer ", sizeof(parts)-strlen(parts)-1);)
+    if (strcmp(state.lb_ping_status, "OK") != strncat(parts, "LoadBalancer ", sizeof(parts)-strlen(parts)-1));
     if (strcmp(state.nc1_ping_status, "OK") != 0 || strcmp(state.nc2_ping_status, "OK") != 0) strncat(parts, "Nextcloud ", sizeof(parts)-strlen(parts)-1);
     if (strcmp(state.nfs_ping_status, "OK") != 0) strncat(parts, "NFS ", sizeof(parts)-strlen(parts)-1);
     if (parts[0] == '\0')
