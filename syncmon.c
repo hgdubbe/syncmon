@@ -105,6 +105,8 @@ struct {
     char r_s_status[MAX_VAL];
     char r_sync[MAX_VAL];
     char r_det[MAX_VAL];
+    char r_sent[MAX_VAL];   /* REDIS_SENT_PAYLOAD */
+    char r_recv[MAX_VAL];   /* REDIS_RECV_PAYLOAD */
     char r_chk[MAX_VAL];
     char r_m_ep[MAX_VAL];
     char r_s_ep[MAX_VAL];
@@ -307,6 +309,8 @@ void load_state() {
     get_env_or("REDIS_SLAVE_STATUS",      "N/A",               state.r_s_status, sizeof(state.r_s_status));
     get_env_or("REDIS_REPLICATION_STATUS","N/A",               state.r_sync,     sizeof(state.r_sync));
     get_env_or("REDIS_REPLICATION_DETAIL","not available",     state.r_det,      sizeof(state.r_det));
+    get_env_or("REDIS_SENT_PAYLOAD",      "(none)",            state.r_sent,     sizeof(state.r_sent));
+    get_env_or("REDIS_RECV_PAYLOAD",      "(none)",            state.r_recv,     sizeof(state.r_recv));
     get_env_or("REDIS_CHECK_TIMESTAMP",   state.timestamp,     state.r_chk,      sizeof(state.r_chk));
 
     char mh[64], mp[64], sh[64], sp[64];
@@ -549,30 +553,58 @@ void draw_status_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
     }
 }
 
+/*
+ * draw_ping_graph  –  same visual language as draw_status_graph.
+ *
+ * Mapping:   timeout / parse error  →  full block in err colour  (was ASCII 'X')
+ *            0 – 30 ms              →  ok colour,  height 4  (full)
+ *            31 – 100 ms            →  warn colour, height 2  (mid)
+ *            > 100 ms               →  err colour,  height 1  (low)
+ *
+ * When use_braille is on, heights are encoded with braille_bar() so the
+ * texture matches the sync graphs exactly.
+ * When use_braille is off, classic block heights are used (▄ / ▆ / █).
+ */
 void draw_ping_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
-    static uint32_t bars[] = {0x2581,0x2582,0x2583,0x2584,0x2585,0x2586,0x2587,0x2588};
     for (int c = 0; c < mw; c++) {
         int idx = head - 1 - (mw - 1 - c);
         while (idx < 0) idx += HIST_SIZE;
         idx %= HIST_SIZE;
         int v = hd[idx];
 
+        /* No data yet */
+        if (v == -1) {
+            tb_set_cell(x+c, y, 0x2508, th->skip, th->bg);
+            continue;
+        }
+        /* Timeout / unreachable: same as ERROR in status graph */
         if (v < 0) {
-            tb_set_cell(x+c, y, 'X', th->err|TB_BOLD, th->bg);
+            tb_set_cell(x+c, y, 0x2588, th->err|TB_BOLD, th->bg);
             continue;
         }
 
-        int capped = v;
-        if (capped > 300) capped = 300;
-        int level = (capped * 7) / 300;
-        if (level < 0) level = 0;
-        if (level > 7) level = 7;
+        /* Map latency to a 0-4 height and colour, mirroring status_to_val logic */
+        int h;
+        uint16_t col;
+        if (v == 0) {
+            /* 0 ms is suspicious (parse failure treated as no data above,
+               but guard anyway) */
+            h = 1; col = th->warn;
+        } else if (v <= 30) {
+            h = 4; col = th->ok;
+        } else if (v <= 100) {
+            h = 2; col = th->warn;
+        } else {
+            h = 1; col = th->err;
+        }
 
-        uint16_t col = th->ok;
-        if (v > 100) col = th->err;
-        else if (v > 30) col = th->warn;
-
-        tb_set_cell(x+c, y, bars[level], col, th->bg);
+        if (config.use_braille) {
+            tb_set_cell(x+c, y, braille_bar(h, h), col, th->bg);
+        } else {
+            /* classic block heights: 1→▂  2→▄  3→▆  4→█ */
+            static const uint32_t blocks[] = {0x2582, 0x2584, 0x2586, 0x2588};
+            tb_set_cell(x+c, y, blocks[h-1], col, th->bg);
+        }
     }
 }
 
@@ -693,7 +725,6 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h,
     }
     
     /* Draw left and right vertical drops */
-    /* Ensure no gaps by drawing vertical lines all the way to the hook_y and rail_y */
     for(int y = hook_y; y < rail_y; y++) {
         tb_set_cell(x1, y, 0x2502, th->skip, th->bg); /* │ */
         tb_set_cell(x2, y, 0x2502, th->skip, th->bg); /* │ */
@@ -704,7 +735,6 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h,
 
     /* Animation logic */
     if (strcmp(master_status, "ERROR") == 0) {
-        /* Master is down, no animation sent */
         return;
     }
 
@@ -717,7 +747,6 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h,
     int dot_x = -1, dot_y = -1;
 
     if (dir > 0) { /* Left to Right (MariaDB) */
-        /* Draw destination arrow only if it can reach */
         if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
             tb_set_cell(x2, hook_y, 0x25B2, col | TB_BOLD, th->bg); /* ▲ */
         }
@@ -733,13 +762,11 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h,
             dot_y = rail_y - (pos - vert_len_left - horiz_len);
         }
         
-        /* If sync/slave error, stop animation at the center box */
         if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) && dot_x > box_x + box_w/2) {
-            dot_x = -1; /* Hide dot */
+            dot_x = -1;
         }
         
     } else { /* Right to Left (Redis) */
-        /* Draw destination arrow only if it can reach */
         if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
             tb_set_cell(x1, hook_y, 0x25B2, col | TB_BOLD, th->bg); /* ▲ */
         }
@@ -755,13 +782,11 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h,
             dot_y = rail_y - (pos - vert_len_right - horiz_len);
         }
         
-        /* If sync/slave error, stop animation at the center box */
         if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) && dot_x < box_x + box_w/2) {
-            dot_x = -1; /* Hide dot */
+            dot_x = -1;
         }
     }
 
-    /* Draw dot if visible and not behind box */
     if (dot_x != -1) {
         if (dot_x < box_x || dot_x >= box_x + box_w || dot_y != rail_y) {
             tb_set_cell(dot_x, dot_y, 0x25C6, col | TB_BOLD, th->bg); /* ◆ */
@@ -773,13 +798,12 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 {
     draw_corner_title_box(x, y, w, h, state.m_m_ep, "◈ MariaDB ◈", state.m_s_ep, th->box2, th);
 
-    /* Labels at y+1 */
     draw_status_line_lr_flush(x, y+1, w, "Master", state.m_m_status, "Sync", state.m_sync, state.m_s_status, "Slave", th);
 
     int box_w = 36;
     int box_h = 4;
     int box_x = x + (w - box_w) / 2;
-    int box_y = y + 2; /* Moved up by 1 */
+    int box_y = y + 2;
 
     uint16_t sync_col = get_status_fg(state.m_sync, th);
     draw_box(box_x, box_y, box_w, box_h, sync_col, NULL, th);
@@ -791,9 +815,7 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     format_shortened_left(buf, sizeof(buf), "S-GTID: ", state.m_s_gtid, box_w - 4);
     tb_print_fixed(box_x + 2, box_y + 2, th->skip, th->bg, buf, box_w - 4);
 
-    /* Hooks start at y+2 */
     int hook_y = y + 2;
-    /* Move hooks inward to align roughly under the badges */
     int left_hook_x  = x + 7;
     int right_hook_x = x + w - 8;
 
@@ -808,31 +830,38 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 {
     draw_corner_title_box(x, y, w, h, state.r_s_ep, "◈ Redis ◈", state.r_m_ep, th->box2, th);
 
-    /* Labels at y+1 */
     draw_status_line_lr_flush(x, y+1, w, "Slave", state.r_s_status, "Repl", state.r_sync, state.r_m_status, "Master", th);
 
     int box_w = 44;
     int box_h = 4;
     int box_x = x + (w - box_w) / 2;
-    int box_y = y + 2; /* Moved up by 1 */
+    int box_y = y + 2;
 
     uint16_t sync_col = get_status_fg(state.r_sync, th);
     draw_box(box_x, box_y, box_w, box_h, sync_col, NULL, th);
 
     char buf[MAX_VAL];
-    format_shortened_left(buf, sizeof(buf), "Master sent : ", state.r_det, box_w - 4);
+
+    /* Show sent payload (what master wrote this cycle) */
+    format_shortened_left(buf, sizeof(buf), "Sent : ", state.r_sent, box_w - 4);
     tb_print_fixed(box_x + 2, box_y + 1, th->skip, th->bg, buf, box_w - 4);
 
-    tb_print_fixed(box_x + 2, box_y + 2, th->skip, th->bg,
-                   "Slave recv  : <placeholder - daemon not wired yet>",
-                   box_w - 4);
+    /* Show received payload (what slave echoed back) – colour signals match/mismatch */
+    int payload_match = (strcmp(state.r_sent, state.r_recv) == 0 &&
+                         strcmp(state.r_sent, "(none)") != 0);
+    uint16_t recv_col = payload_match ? th->ok : th->warn;
+    /* If slave is fully down, show in err colour */
+    if (strcmp(state.r_s_status, "ERROR") == 0 ||
+        strcmp(state.r_recv, "(no data)") == 0)
+        recv_col = th->err;
 
-    /* Hooks start at y+2 */
+    format_shortened_left(buf, sizeof(buf), "Recv : ", state.r_recv, box_w - 4);
+    tb_print_fixed(box_x + 2, box_y + 2, recv_col, th->bg, buf, box_w - 4);
+
     int hook_y = y + 2;
     int left_hook_x  = x + 7;
     int right_hook_x = x + w - 8;
 
-    /* For Redis, master is on the right, so we pass r_m_status first, then sync, then slave */
     draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w, 
                               -1, state.r_m_status, state.r_sync, state.r_s_status, th, anim_tick % 60);
 
@@ -897,7 +926,6 @@ void draw_ui(int anim_tick) {
     draw_node_panel(bx + half, y, half2, 5, SYM_NC " Nextcloud 2", state.nc2_host, state.nc2_ping_status, state.nc2_ping, state.nc2_check, state.nc2_chk, th);
     y += 6;
 
-    /* MariaDB and Redis panels are now 8 lines high since we removed the blank line */
     draw_mariadb_panel(bx, y, bw, 8, anim_tick, th);
     y += 9;
 
