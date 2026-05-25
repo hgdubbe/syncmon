@@ -38,13 +38,11 @@ typedef struct {
     char redis_slave_port[16];
     char redis_password[256];
 
-    /* placeholder component addresses */
     char lb_host[256];
     char dns_host[256];
     char nc1_host[256];
     char nc2_host[256];
     char nfs_host[256];
-    /* optional URL overrides for HTTP checks */
     char lb_check_url[512];
     char nc1_check_url[512];
     char nc2_check_url[512];
@@ -156,7 +154,6 @@ void log_message(Config *cfg, const char *msg) {
     }
 }
 
-/* ── now_str: fill buf with current timestamp ─────────────────────────────────────── */
 static void now_str(char *buf, size_t sz) {
     time_t t=time(NULL); struct tm tm=*localtime(&t);
     snprintf(buf,sz,"%04d-%02d-%02d %02d:%02d:%02d",
@@ -164,7 +161,6 @@ static void now_str(char *buf, size_t sz) {
              tm.tm_hour,tm.tm_min,tm.tm_sec);
 }
 
-/* ── ping_host: ICMP ping, fills status ("OK"/"WARN"/"ERROR") + latency ─── */
 void ping_host(const char *host, char *status_out, char *detail_out) {
     char cmd[512];
     const char *awk_frag = " | awk '/rtt|round-trip/{split($4,a,\"/\"); printf \"%.0fms\",a[2]}'";
@@ -185,7 +181,6 @@ void ping_host(const char *host, char *status_out, char *detail_out) {
     }
 }
 
-/* ── http_check: curl GET, fills "HTTP <code> <first-meaningful-field>" ─── */
 void http_check(const char *url, char *result_out, size_t result_sz) {
     char cmd[768];
     snprintf(cmd, sizeof(cmd),
@@ -203,7 +198,6 @@ void http_check(const char *url, char *result_out, size_t result_sz) {
     snprintf(result_out, result_sz, "%s", buf);
 }
 
-/* ── dns_check: dig lookup, fills "resolv OK: <addr>" or error ───────────── */
 void dns_check(const char *nameserver, char *result_out, size_t result_sz) {
     char cmd[512];
     snprintf(cmd, sizeof(cmd),
@@ -219,7 +213,6 @@ void dns_check(const char *nameserver, char *result_out, size_t result_sz) {
         snprintf(result_out, result_sz, "ERROR query timeout / NXDOMAIN");
 }
 
-/* ── nfs_check: showmount or /proc/mounts, fills mount status ──────────── */
 void nfs_check(const char *host, char *result_out, size_t result_sz) {
     char cmd[512];
     snprintf(cmd, sizeof(cmd),
@@ -234,7 +227,6 @@ void nfs_check(const char *host, char *result_out, size_t result_sz) {
         snprintf(result_out, result_sz, "ERROR no exports / unreachable");
 }
 
-/* ── write_state: atomic write via tmp rename ────────────────────────── */
 void write_state(const char* state_file,
                  const char* mysql_master_host, const char* mysql_master_port,
                  const char* mysql_slave_host,  const char* mysql_slave_port,
@@ -246,21 +238,15 @@ void write_state(const char* state_file,
                  const char* rm_status,   const char* rs_status, const char* r_rep_status,
                  const char* r_detail,    const char* message,
                  const char* mysql_check_ts, const char* redis_check_ts,
-                 /* Redis payload tracing */
                  const char* redis_sent_payload, const char* redis_recv_payload,
-                 /* lb */
                  const char* lb_host,  const char* lb_ping_st, const char* lb_ping,
                  const char* lb_check, const char* lb_chk,
-                 /* dns */
                  const char* dns_host,  const char* dns_ping_st, const char* dns_ping,
                  const char* dns_check, const char* dns_chk,
-                 /* nc1 */
                  const char* nc1_host,  const char* nc1_ping_st, const char* nc1_ping,
                  const char* nc1_check, const char* nc1_chk,
-                 /* nc2 */
                  const char* nc2_host,  const char* nc2_ping_st, const char* nc2_ping,
                  const char* nc2_check, const char* nc2_chk,
-                 /* nfs */
                  const char* nfs_host,  const char* nfs_ping_st, const char* nfs_ping,
                  const char* nfs_check, const char* nfs_chk)
 {
@@ -271,7 +257,6 @@ void write_state(const char* state_file,
     char ts[64]; now_str(ts, sizeof(ts));
     fprintf(f,"SYNCMON_TIMESTAMP=\"%s\"\n", ts);
     fprintf(f,"OVERALL_STATUS=\"%s\"\n",           status         ?status         :"UNKNOWN");
-    /* MySQL */
     fprintf(f,"MYSQL_MASTER_HOST=\"%s\"\n",        mysql_master_host?mysql_master_host:"");
     fprintf(f,"MYSQL_MASTER_PORT=\"%s\"\n",        mysql_master_port?mysql_master_port:"");
     fprintf(f,"MYSQL_SLAVE_HOST=\"%s\"\n",         mysql_slave_host ?mysql_slave_host :"");
@@ -282,7 +267,6 @@ void write_state(const char* state_file,
     fprintf(f,"MYSQL_MASTER_GTID=\"%s\"\n",        m_gtid         ?m_gtid         :"");
     fprintf(f,"MYSQL_SLAVE_GTID=\"%s\"\n",         s_gtid         ?s_gtid         :"");
     fprintf(f,"MYSQL_CHECK_TIMESTAMP=\"%s\"\n",    mysql_check_ts ?mysql_check_ts :"unknown");
-    /* Redis */
     fprintf(f,"REDIS_MASTER_HOST=\"%s\"\n",        redis_master_host?redis_master_host:"");
     fprintf(f,"REDIS_MASTER_PORT=\"%s\"\n",        redis_master_port?redis_master_port:"");
     fprintf(f,"REDIS_SLAVE_HOST=\"%s\"\n",         redis_slave_host ?redis_slave_host :"");
@@ -291,41 +275,34 @@ void write_state(const char* state_file,
     fprintf(f,"REDIS_SLAVE_STATUS=\"%s\"\n",       rs_status      ?rs_status      :"UNKNOWN");
     fprintf(f,"REDIS_REPLICATION_STATUS=\"%s\"\n", r_rep_status   ?r_rep_status   :"UNKNOWN");
     fprintf(f,"REDIS_REPLICATION_DETAIL=\"%s\"\n", r_detail       ?r_detail       :"");
-    /* Redis payload tracing: what master wrote vs what slave echoed back */
     fprintf(f,"REDIS_SENT_PAYLOAD=\"%s\"\n",       redis_sent_payload ?redis_sent_payload :"");
     fprintf(f,"REDIS_RECV_PAYLOAD=\"%s\"\n",       redis_recv_payload ?redis_recv_payload :"");
     fprintf(f,"REDIS_CHECK_TIMESTAMP=\"%s\"\n",    redis_check_ts ?redis_check_ts :"unknown");
-    /* LB */
     fprintf(f,"LB_HOST=\"%s\"\n",              lb_host    ?lb_host    :"");
     fprintf(f,"LB_PING_STATUS=\"%s\"\n",       lb_ping_st ?lb_ping_st :"N/A");
     fprintf(f,"LB_PING=\"%s\"\n",              lb_ping    ?lb_ping    :"");
     fprintf(f,"LB_CHECK=\"%s\"\n",             lb_check   ?lb_check   :"");
     fprintf(f,"LB_CHECK_TIMESTAMP=\"%s\"\n",   lb_chk     ?lb_chk     :"never");
-    /* DNS */
     fprintf(f,"DNS_HOST=\"%s\"\n",             dns_host   ?dns_host   :"");
     fprintf(f,"DNS_PING_STATUS=\"%s\"\n",      dns_ping_st?dns_ping_st:"N/A");
     fprintf(f,"DNS_PING=\"%s\"\n",             dns_ping   ?dns_ping   :"");
     fprintf(f,"DNS_CHECK=\"%s\"\n",            dns_check  ?dns_check  :"");
     fprintf(f,"DNS_CHECK_TIMESTAMP=\"%s\"\n",  dns_chk    ?dns_chk    :"never");
-    /* NC1 */
     fprintf(f,"NC1_HOST=\"%s\"\n",             nc1_host   ?nc1_host   :"");
     fprintf(f,"NC1_PING_STATUS=\"%s\"\n",      nc1_ping_st?nc1_ping_st:"N/A");
     fprintf(f,"NC1_PING=\"%s\"\n",             nc1_ping   ?nc1_ping   :"");
     fprintf(f,"NC1_CHECK=\"%s\"\n",            nc1_check  ?nc1_check  :"");
     fprintf(f,"NC1_CHECK_TIMESTAMP=\"%s\"\n",  nc1_chk    ?nc1_chk    :"never");
-    /* NC2 */
     fprintf(f,"NC2_HOST=\"%s\"\n",             nc2_host   ?nc2_host   :"");
     fprintf(f,"NC2_PING_STATUS=\"%s\"\n",      nc2_ping_st?nc2_ping_st:"N/A");
     fprintf(f,"NC2_PING=\"%s\"\n",             nc2_ping   ?nc2_ping   :"");
     fprintf(f,"NC2_CHECK=\"%s\"\n",            nc2_check  ?nc2_check  :"");
     fprintf(f,"NC2_CHECK_TIMESTAMP=\"%s\"\n",  nc2_chk    ?nc2_chk    :"never");
-    /* NFS */
     fprintf(f,"NFS_HOST=\"%s\"\n",             nfs_host   ?nfs_host   :"");
     fprintf(f,"NFS_PING_STATUS=\"%s\"\n",      nfs_ping_st?nfs_ping_st:"N/A");
     fprintf(f,"NFS_PING=\"%s\"\n",             nfs_ping   ?nfs_ping   :"");
     fprintf(f,"NFS_CHECK=\"%s\"\n",            nfs_check  ?nfs_check  :"");
     fprintf(f,"NFS_CHECK_TIMESTAMP=\"%s\"\n",  nfs_chk    ?nfs_chk    :"never");
-
     fprintf(f,"SYNCMON_MESSAGE=\"%s\"\n", message?message:"");
     fclose(f);
     rename(tmp_file, state_file);
@@ -354,7 +331,6 @@ void get_mysql_gtid(const char* host,const char* port,const char* user,
     }
 }
 
-/* ── Global Redis payload counter (persists across check cycles) ─────── */
 static unsigned long long g_redis_seq = 0;
 
 void run_checks(Config *cfg) {
@@ -365,10 +341,8 @@ void run_checks(Config *cfg) {
          redis_rep_status[16]="UNKNOWN";
     char redis_rep_detail[256]="unknown", overall_msg[256]="";
     char mysql_check_ts[64]="unknown", redis_check_ts[64]="unknown";
-    /* Redis payload tracing */
     char redis_sent_payload[128]="", redis_recv_payload[128]="";
 
-    /* ── MariaDB ────────────────────────────────────────────────────────────────── */
     if (cfg->enable_mysql_check) {
         char cmd[MAX_BUFFER], pass_opt[300]={0};
         if (strlen(cfg->mysql_password)>0)
@@ -399,20 +373,17 @@ void run_checks(Config *cfg) {
         now_str(mysql_check_ts, sizeof(mysql_check_ts));
     }
 
-    /* ── Redis ─────────────────────────────────────────────────────────────────── */
     if (cfg->enable_redis_check) {
         char cmd[MAX_BUFFER], out[MAX_BUFFER];
         const char *pass=cfg->redis_password;
         char auth_args[128]="";
         if (strlen(pass)>0) snprintf(auth_args,sizeof(auth_args),"-a %s",pass);
 
-        /* Build payload: upcounting sequence number + current timestamp */
         char ts_now[64]; now_str(ts_now, sizeof(ts_now));
         g_redis_seq++;
         snprintf(redis_sent_payload, sizeof(redis_sent_payload),
                  "seq=%llu ts=%s", g_redis_seq, ts_now);
 
-        /* Write payload to master */
         snprintf(cmd,sizeof(cmd),
                  "redis-cli --no-auth-warning -h %s -p %s %s SET syncmon:probe \"%s\" EX 120 2>/dev/null",
                  cfg->redis_master_host, cfg->redis_master_port,
@@ -420,7 +391,6 @@ void run_checks(Config *cfg) {
         int r_master_ok = (system(cmd) == 0);
         strcpy(redis_master_status, r_master_ok ? "OK" : "ERROR");
 
-        /* Read payload back from slave (confirms replication round-trip) */
         snprintf(cmd,sizeof(cmd),
                  "redis-cli --no-auth-warning -h %s -p %s %s GET syncmon:probe 2>/dev/null",
                  cfg->redis_slave_host, cfg->redis_slave_port,
@@ -435,7 +405,6 @@ void run_checks(Config *cfg) {
         }
 
         if (r_slave_ok) {
-            /* Also check INFO replication for link status */
             snprintf(cmd,sizeof(cmd),
                      "redis-cli --no-auth-warning -h %s -p %s %s INFO replication 2>/dev/null",
                      cfg->redis_slave_host,cfg->redis_slave_port, auth_args);
@@ -450,7 +419,6 @@ void run_checks(Config *cfg) {
                     else if (strncmp(line,"master_host:",12)==0)               sscanf(line+12,"%s",host);
                 }
                 pclose(fp);
-                /* Verify payload echo matches what we sent */
                 int payload_ok = (strcmp(redis_sent_payload, redis_recv_payload)==0);
                 snprintf(redis_rep_detail,sizeof(redis_rep_detail),
                          "link=%s io=%s host=%s payload=%s",
@@ -464,14 +432,12 @@ void run_checks(Config *cfg) {
         now_str(redis_check_ts, sizeof(redis_check_ts));
     }
 
-    /* ── Placeholder components ────────────────────────────────────────────────────── */
     char lb_ping_st[16],  lb_ping[64],  lb_check_res[256], lb_chk[64];
     char dns_ping_st[16], dns_ping[64], dns_check_res[256],dns_chk[64];
     char nc1_ping_st[16], nc1_ping[64], nc1_check_res[256],nc1_chk[64];
     char nc2_ping_st[16], nc2_ping[64], nc2_check_res[256],nc2_chk[64];
     char nfs_ping_st[16], nfs_ping[64], nfs_check_res[256],nfs_chk[64];
 
-    /* LB */
     ping_host(cfg->lb_host, lb_ping_st, lb_ping);
     if (strlen(cfg->lb_check_url)>0)
         http_check(cfg->lb_check_url, lb_check_res, sizeof(lb_check_res));
@@ -481,12 +447,10 @@ void run_checks(Config *cfg) {
     }
     now_str(lb_chk, sizeof(lb_chk));
 
-    /* DNS */
     ping_host(cfg->dns_host, dns_ping_st, dns_ping);
     dns_check(cfg->dns_host, dns_check_res, sizeof(dns_check_res));
     now_str(dns_chk, sizeof(dns_chk));
 
-    /* NC1 */
     ping_host(cfg->nc1_host, nc1_ping_st, nc1_ping);
     if (strlen(cfg->nc1_check_url)>0)
         http_check(cfg->nc1_check_url, nc1_check_res, sizeof(nc1_check_res));
@@ -496,7 +460,6 @@ void run_checks(Config *cfg) {
     }
     now_str(nc1_chk, sizeof(nc1_chk));
 
-    /* NC2 */
     ping_host(cfg->nc2_host, nc2_ping_st, nc2_ping);
     if (strlen(cfg->nc2_check_url)>0)
         http_check(cfg->nc2_check_url, nc2_check_res, sizeof(nc2_check_res));
@@ -506,12 +469,10 @@ void run_checks(Config *cfg) {
     }
     now_str(nc2_chk, sizeof(nc2_chk));
 
-    /* NFS */
     ping_host(cfg->nfs_host, nfs_ping_st, nfs_ping);
     nfs_check(cfg->nfs_host, nfs_check_res, sizeof(nfs_check_res));
     now_str(nfs_chk, sizeof(nfs_chk));
 
-    /* ── Overall status ──────────────────────────────────────────────────────────────── */
     char overall[16];
     if (strcmp(mysql_master_status,"OK")==0 && strcmp(mysql_slave_status,"OK")==0 &&
         strcmp(mysql_sync_status,  "OK")==0 &&
@@ -550,55 +511,31 @@ void run_checks(Config *cfg) {
 
 /* ══════════════════════════════════════════════════════════════════════════════
  * Realistic simulation state machine
- *
- * The system starts fully healthy. Every ~30 s tick it advances through a
- * scenario list that mimics what a real cluster experiences over time:
- *   - Long stretches of normal operation (OK everywhere)
- *   - Brief transient latency spikes (WARN) on individual components
- *   - Short replication lag periods (slave gtid behind master by a few txns)
- *   - Occasional single-component errors (~30 s, one or two ticks)
- *   - Recovery back to OK
- *
- * Key causality rules that are enforced:
- *   - If redis_master is ERROR  → redis_rep is ERROR, slave read is stale/none
- *   - If redis_slave  is ERROR  → redis_rep is ERROR
- *   - If mysql_master is ERROR  → mysql_sync is ERROR, slave gtid may drift
- *   - mysql_sync WARN only when both nodes are reachable but gtids differ
- *   - ping WARN/ERROR on a host cascades to its service status logically
  * ══════════════════════════════════════════════════════════════════════════════ */
 
 typedef struct {
-    /* description logged */
     const char *scenario_name;
-    /* MySQL */
-    int mysql_master_ok;    /* 1=OK, 0=ERROR */
+    int mysql_master_ok;
     int mysql_slave_ok;
-    int mysql_gtid_lag;     /* slave is N transactions behind master */
-    /* Redis */
+    int mysql_gtid_lag;
     int redis_master_ok;
     int redis_slave_ok;
-    int redis_link_up;      /* 0 = link down even if both respond to PING */
-    int redis_io_sec;       /* master_last_io_seconds_ago */
-    int redis_payload_match;/* 1 = sent==recv, 0 = stale/mismatch */
-    /* LB */
-    int lb_ping_ms;         /* -1 = timeout */
-    int lb_http_code;       /* 0 = curl error */
-    int lb_backends;        /* e.g. 3/3, 2/3 */
-    /* DNS */
+    int redis_link_up;
+    int redis_io_sec;
+    int redis_payload_match;
+    int lb_ping_ms;
+    int lb_http_code;
+    int lb_backends;
     int dns_ping_ms;
     int dns_resolv_ok;
-    /* NC1 */
     int nc1_ping_ms;
     int nc1_http_code;
     int nc1_maintenance;
-    /* NC2 */
     int nc2_ping_ms;
     int nc2_http_code;
     int nc2_maintenance;
-    /* NFS */
     int nfs_ping_ms;
     int nfs_export_ok;
-    /* How many simulation ticks to hold this scenario */
     int ticks;
 } SimScenario;
 
@@ -639,11 +576,74 @@ static const SimScenario SIM_SCENARIOS[] = {
 };
 #define SIM_SCENARIO_COUNT ((int)(sizeof(SIM_SCENARIOS)/sizeof(SIM_SCENARIOS[0])))
 
+/* ── sim_jitter ────────────────────────────────────────────────────────────────
+ * Deterministic-but-varied per-tick noise. Uses a cheap LCG seeded from the
+ * current redis sequence counter XOR'd with a salt so each call site produces
+ * an independent stream.
+ *
+ *   sim_jitter(salt, center, spread)
+ *     → integer in [center - spread, center + spread]
+ *
+ * Passing a negative center returns the center unchanged (used to preserve
+ * "timeout" sentinels where ms == -1).
+ * ──────────────────────────────────────────────────────────────────────────── */
+static int sim_jitter(unsigned int salt, int center, int spread) {
+    if (center < 0) return center;          /* preserve -1 (timeout) sentinels */
+    unsigned int seed = (unsigned int)(g_redis_seq ^ (g_redis_seq >> 17)) + salt * 2654435761u;
+    seed ^= (seed >> 16);
+    seed *= 0x45d9f3b;
+    seed ^= (seed >> 16);
+    int range = (spread * 2) + 1;
+    int offset = (int)(seed % (unsigned int)range) - spread;
+    int result = center + offset;
+    return result < 0 ? 0 : result;
+}
+
+/* ── sim_http_code ─────────────────────────────────────────────────────────────
+ * Occasionally inject realistic non-200 transient responses even during
+ * "healthy" scenarios. With a ~4 % chance per tick, returns a realistic
+ * degraded code (502, 503, 429); otherwise returns the scenario's base code.
+ * During a known-broken scenario (base_code == 0) always returns 0.
+ * ──────────────────────────────────────────────────────────────────────────── */
+static int sim_http_code(unsigned int salt, int base_code) {
+    if (base_code == 0) return 0;
+    unsigned int seed = (unsigned int)(g_redis_seq ^ salt * 0xdeadbeef);
+    seed ^= seed >> 15; seed *= 0x9e3779b9; seed ^= seed >> 13;
+    /* ~4 % chance of a transient non-200 */
+    if ((seed % 25) == 0) {
+        static const int transient_codes[] = {502, 503, 429, 504};
+        return transient_codes[seed % 4];
+    }
+    return base_code;
+}
+
+/* ── sim_redis_io ──────────────────────────────────────────────────────────────
+ * Redis io_seconds jitters ±2 s around the scenario base value, but never
+ * goes below 0. Values above 20 s still trigger WARN as before.
+ * ──────────────────────────────────────────────────────────────────────────── */
+static int sim_redis_io(int base_io) {
+    if (base_io < 0) return base_io;
+    return sim_jitter(0xc0ffee, base_io, 2);
+}
+
+/* ── sim_gtid_drift ────────────────────────────────────────────────────────────
+ * During healthy scenarios the slave GTID is always in sync, but with a ~6 %
+ * chance per tick it falls 1 transaction behind (transient replication micro-
+ * lag) and recovers on the next tick automatically.
+ * Only active when the scenario itself has no lag (gtid_lag == 0) and both
+ * nodes are up, so it doesn't conflict with explicit lag scenarios.
+ * ──────────────────────────────────────────────────────────────────────────── */
+static int sim_gtid_drift(int base_lag, int master_ok, int slave_ok) {
+    if (base_lag != 0 || !master_ok || !slave_ok) return base_lag;
+    unsigned int seed = (unsigned int)(g_redis_seq * 0x9b89cd3f);
+    seed ^= seed >> 14; seed *= 0x27d4eb2f; seed ^= seed >> 15;
+    return ((seed % 16) == 0) ? 1 : 0;   /* ~6 % chance of 1-txn transient lag */
+}
+
 void run_test_mode(const char* state_file) {
-    static int sim_scenario_idx  = -1;  /* current scenario index */
+    static int sim_scenario_idx     = -1;
     static int sim_tick_in_scenario = 0;
 
-    /* On first call, load persistent state from a tiny side-file */
     char sim_state_path[PATH_MAX+16];
     snprintf(sim_state_path, sizeof(sim_state_path), "%s.simstate", state_file);
 
@@ -665,7 +665,6 @@ void run_test_mode(const char* state_file) {
         }
     }
 
-    /* Advance to next scenario if ticks exhausted */
     const SimScenario *sc = &SIM_SCENARIOS[sim_scenario_idx];
     if (sim_tick_in_scenario >= sc->ticks) {
         sim_scenario_idx = (sim_scenario_idx + 1) % SIM_SCENARIO_COUNT;
@@ -673,41 +672,65 @@ void run_test_mode(const char* state_file) {
         sc = &SIM_SCENARIOS[sim_scenario_idx];
     }
     sim_tick_in_scenario++;
-
-    /* Bump redis probe sequence */
     g_redis_seq++;
 
-    /* ── Build timestamp ─────────────────────────────────────────────── */
+    /* ── Timestamp ───────────────────────────────────────────────────────── */
     char ts[64]; now_str(ts, sizeof(ts));
 
-    /* ── Build Redis sent payload ─────────────────────────────────────── */
+    /* ── Apply per-tick jitter to scenario values ────────────────────────── */
+
+    /* Ping latencies: jitter ±30 % of the base value, capped to ±15 ms min */
+    int lb_spread  = sc->lb_ping_ms  > 0 ? (sc->lb_ping_ms  / 3 + 3) : 0;
+    int dns_spread = sc->dns_ping_ms > 0 ? (sc->dns_ping_ms / 3 + 3) : 0;
+    int nc1_spread = sc->nc1_ping_ms > 0 ? (sc->nc1_ping_ms / 3 + 3) : 0;
+    int nc2_spread = sc->nc2_ping_ms > 0 ? (sc->nc2_ping_ms / 3 + 3) : 0;
+    int nfs_spread = sc->nfs_ping_ms > 0 ? (sc->nfs_ping_ms / 3 + 3) : 0;
+
+    int lb_ms  = sim_jitter(0x01, sc->lb_ping_ms,  lb_spread);
+    int dns_ms = sim_jitter(0x02, sc->dns_ping_ms, dns_spread);
+    int nc1_ms = sim_jitter(0x03, sc->nc1_ping_ms, nc1_spread);
+    int nc2_ms = sim_jitter(0x04, sc->nc2_ping_ms, nc2_spread);
+    int nfs_ms = sim_jitter(0x05, sc->nfs_ping_ms, nfs_spread);
+
+    /* Redis io_seconds jitter */
+    int redis_io = sim_redis_io(sc->redis_io_sec);
+
+    /* Transient HTTP code fluctuations */
+    int lb_http  = sim_http_code(0x10, sc->lb_http_code);
+    int nc1_http = sim_http_code(0x11, sc->nc1_http_code);
+    int nc2_http = sim_http_code(0x12, sc->nc2_http_code);
+
+    /* Transient GTID micro-lag on otherwise-healthy ticks */
+    int gtid_lag = sim_gtid_drift(sc->mysql_gtid_lag,
+                                  sc->mysql_master_ok, sc->mysql_slave_ok);
+
+    /* ── Redis payload ───────────────────────────────────────────────────── */
     char redis_sent[128], redis_recv[128];
     snprintf(redis_sent, sizeof(redis_sent), "seq=%llu ts=%s", g_redis_seq, ts);
     if (sc->redis_payload_match && sc->redis_slave_ok && sc->redis_link_up) {
         snprintf(redis_recv, sizeof(redis_recv), "%s", redis_sent);
     } else if (sc->redis_slave_ok && !sc->redis_link_up) {
-        /* slave responds but holds stale data from last good replication */
         snprintf(redis_recv, sizeof(redis_recv), "seq=%llu ts=(stale)",
                  g_redis_seq > 1 ? g_redis_seq - 1 : g_redis_seq);
     } else {
         snprintf(redis_recv, sizeof(redis_recv), "(no data)");
     }
 
-    /* ── MySQL GTID ───────────────────────────────────────────────────── */
+    /* ── MySQL GTID ──────────────────────────────────────────────────────── */
     unsigned long long base_txn = 10000 + g_redis_seq * 3;
     char m_gtid[256], s_gtid[256];
     snprintf(m_gtid, sizeof(m_gtid), "3E11-1111-1111-1111-1111:%llu", base_txn);
     snprintf(s_gtid, sizeof(s_gtid), "3E11-1111-1111-1111-1111:%llu",
-             sc->mysql_slave_ok ? (base_txn - (unsigned long long)sc->mysql_gtid_lag)
+             sc->mysql_slave_ok ? (base_txn - (unsigned long long)gtid_lag)
                                 : (base_txn - 10ULL));
 
-    /* ── Derive statuses ──────────────────────────────────────────────── */
+    /* ── Derive statuses ─────────────────────────────────────────────────── */
     const char *mysql_master_st = sc->mysql_master_ok ? "OK" : "ERROR";
     const char *mysql_slave_st  = sc->mysql_slave_ok  ? "OK" : "ERROR";
     const char *mysql_sync_st;
     if (!sc->mysql_master_ok || !sc->mysql_slave_ok)
         mysql_sync_st = "ERROR";
-    else if (sc->mysql_gtid_lag > 0)
+    else if (gtid_lag > 0)
         mysql_sync_st = "WARN";
     else
         mysql_sync_st = "OK";
@@ -724,79 +747,84 @@ void run_test_mode(const char* state_file) {
         redis_rep_st = "WARN";
         snprintf(redis_detail, sizeof(redis_detail),
                  "link=down io=N/A host=172.31.40.234");
-    } else if (sc->redis_io_sec > 20) {
+    } else if (redis_io > 20) {
         redis_rep_st = "WARN";
         snprintf(redis_detail, sizeof(redis_detail),
-                 "link=up io=%d host=172.31.40.234 payload=match", sc->redis_io_sec);
+                 "link=up io=%d host=172.31.40.234 payload=match", redis_io);
     } else {
         int pmatch = sc->redis_payload_match;
         redis_rep_st = pmatch ? "OK" : "WARN";
         snprintf(redis_detail, sizeof(redis_detail),
                  "link=up io=%d host=172.31.40.234 payload=%s",
-                 sc->redis_io_sec, pmatch ? "match" : "mismatch");
+                 redis_io, pmatch ? "match" : "mismatch");
     }
 
-    /* ── Ping helpers ─────────────────────────────────────────────────── */
+    /* ── Ping status strings ─────────────────────────────────────────────── */
 #define PING_ST(ms)  ((ms)<0?"ERROR":(ms)<100?"OK":(ms)<500?"WARN":"ERROR")
-#define PING_STR(ms) ((ms)<0?"timeout":"")
+#define PING_FMT(buf, ms) \
+    do { if ((ms) >= 0) snprintf((buf), 16, "%dms", (ms)); \
+         else strcpy((buf), "timeout"); } while(0)
 
     char lb_ping_str[16], dns_ping_str[16], nc1_ping_str[16],
          nc2_ping_str[16], nfs_ping_str[16];
-    if (sc->lb_ping_ms  >= 0) snprintf(lb_ping_str,  sizeof(lb_ping_str),  "%dms", sc->lb_ping_ms);
-    else strcpy(lb_ping_str,  "timeout");
-    if (sc->dns_ping_ms >= 0) snprintf(dns_ping_str, sizeof(dns_ping_str), "%dms", sc->dns_ping_ms);
-    else strcpy(dns_ping_str, "timeout");
-    if (sc->nc1_ping_ms >= 0) snprintf(nc1_ping_str, sizeof(nc1_ping_str), "%dms", sc->nc1_ping_ms);
-    else strcpy(nc1_ping_str, "timeout");
-    if (sc->nc2_ping_ms >= 0) snprintf(nc2_ping_str, sizeof(nc2_ping_str), "%dms", sc->nc2_ping_ms);
-    else strcpy(nc2_ping_str, "timeout");
-    if (sc->nfs_ping_ms >= 0) snprintf(nfs_ping_str, sizeof(nfs_ping_str), "%dms", sc->nfs_ping_ms);
-    else strcpy(nfs_ping_str, "timeout");
+    PING_FMT(lb_ping_str,  lb_ms);
+    PING_FMT(dns_ping_str, dns_ms);
+    PING_FMT(nc1_ping_str, nc1_ms);
+    PING_FMT(nc2_ping_str, nc2_ms);
+    PING_FMT(nfs_ping_str, nfs_ms);
 
-    /* ── Service check strings ────────────────────────────────────────── */
+    /* ── Service check strings ───────────────────────────────────────────── */
     char lb_check[128], nc1_check[128], nc2_check[128], nfs_check[128], dns_check[128];
 
-    /* LB: degrade http if ping failed */
-    if (sc->lb_ping_ms < 0 || sc->lb_http_code == 0)
+    if (lb_ms < 0 || lb_http == 0)
         snprintf(lb_check, sizeof(lb_check), "curl error / unreachable");
+    else if (lb_http != 200)
+        snprintf(lb_check, sizeof(lb_check), "HTTP %d HAProxy backend %d/3 up (transient)",
+                 lb_http, sc->lb_backends);
     else
         snprintf(lb_check, sizeof(lb_check), "HTTP %d HAProxy active, backend %d/3 up",
-                 sc->lb_http_code, sc->lb_backends);
+                 lb_http, sc->lb_backends);
 
-    /* NC1 */
-    if (sc->nc1_ping_ms < 0 || sc->nc1_http_code == 0)
+    if (nc1_ms < 0 || nc1_http == 0)
         snprintf(nc1_check, sizeof(nc1_check), "curl error / unreachable");
+    else if (nc1_http != 200)
+        snprintf(nc1_check, sizeof(nc1_check), "HTTP %d /status.php (transient) maintenance=%s",
+                 nc1_http, sc->nc1_maintenance ? "true" : "false");
     else
         snprintf(nc1_check, sizeof(nc1_check), "HTTP %d /status.php maintenance=%s",
-                 sc->nc1_http_code, sc->nc1_maintenance ? "true" : "false");
+                 nc1_http, sc->nc1_maintenance ? "true" : "false");
 
-    /* NC2 */
-    if (sc->nc2_ping_ms < 0 || sc->nc2_http_code == 0)
+    if (nc2_ms < 0 || nc2_http == 0)
         snprintf(nc2_check, sizeof(nc2_check), "curl error / unreachable");
+    else if (nc2_http != 200)
+        snprintf(nc2_check, sizeof(nc2_check), "HTTP %d /status.php (transient) maintenance=%s",
+                 nc2_http, sc->nc2_maintenance ? "true" : "false");
     else
         snprintf(nc2_check, sizeof(nc2_check), "HTTP %d /status.php maintenance=%s",
-                 sc->nc2_http_code, sc->nc2_maintenance ? "true" : "false");
+                 nc2_http, sc->nc2_maintenance ? "true" : "false");
 
-    /* NFS */
-    if (sc->nfs_ping_ms < 0 || !sc->nfs_export_ok)
+    if (nfs_ms < 0 || !sc->nfs_export_ok)
         snprintf(nfs_check, sizeof(nfs_check), "ERROR no exports / unreachable");
     else
         snprintf(nfs_check, sizeof(nfs_check), "exports: /data/shared 172.31.0.0/24(ro,sync)");
 
-    /* DNS */
-    if (sc->dns_ping_ms < 0 || !sc->dns_resolv_ok)
+    if (dns_ms < 0 || !sc->dns_resolv_ok)
         snprintf(dns_check, sizeof(dns_check), "ERROR query timeout / NXDOMAIN");
     else
         snprintf(dns_check, sizeof(dns_check), "resolv OK: 172.31.0.1");
 
-    /* ── Overall ──────────────────────────────────────────────────────── */
+    /* ── Overall status ──────────────────────────────────────────────────── */
     const char *overall;
     const char *msg;
     if (strcmp(mysql_master_st,"OK")==0 && strcmp(mysql_slave_st,"OK")==0 &&
         strcmp(mysql_sync_st,  "OK")==0 &&
         strcmp(redis_master_st,"OK")==0 && strcmp(redis_slave_st, "OK")==0 &&
         strcmp(redis_rep_st,   "OK")==0) {
-        overall = "OK";  msg = "All systems operational";
+        /* Even in "all OK" state, elevated HTTP codes downgrade overall to WARN */
+        if (lb_http != 200 || nc1_http != 200 || nc2_http != 200)
+            { overall = "WARN"; msg = "Transient HTTP anomaly detected"; }
+        else
+            { overall = "OK";   msg = "All systems operational"; }
     } else if (strcmp(mysql_master_st,"ERROR")==0 && strcmp(redis_master_st,"ERROR")==0) {
         overall = "ERROR"; msg = "Multiple master failures detected";
     } else {
@@ -813,25 +841,25 @@ void run_test_mode(const char* state_file) {
                 redis_detail, msg,
                 ts, ts,
                 redis_sent, redis_recv,
-                /* lb  */ "172.31.0.10",  PING_ST(sc->lb_ping_ms),  lb_ping_str,  lb_check,  ts,
-                /* dns */ "172.31.0.53",  PING_ST(sc->dns_ping_ms), dns_ping_str, dns_check, ts,
-                /* nc1 */ "172.31.1.11",  PING_ST(sc->nc1_ping_ms), nc1_ping_str, nc1_check, ts,
-                /* nc2 */ "172.31.1.12",  PING_ST(sc->nc2_ping_ms), nc2_ping_str, nc2_check, ts,
-                /* nfs */ "172.31.2.20",  PING_ST(sc->nfs_ping_ms), nfs_ping_str, nfs_check, ts);
-#undef PING_ST
-#undef PING_STR
+                /* lb  */ "172.31.0.10",  PING_ST(lb_ms),  lb_ping_str,  lb_check,  ts,
+                /* dns */ "172.31.0.53",  PING_ST(dns_ms), dns_ping_str, dns_check, ts,
+                /* nc1 */ "172.31.1.11",  PING_ST(nc1_ms), nc1_ping_str, nc1_check, ts,
+                /* nc2 */ "172.31.1.12",  PING_ST(nc2_ms), nc2_ping_str, nc2_check, ts,
+                /* nfs */ "172.31.2.20",  PING_ST(nfs_ms), nfs_ping_str, nfs_check, ts);
 
-    /* Persist simulation state for next tick */
+#undef PING_ST
+#undef PING_FMT
+
     FILE *sf = fopen(sim_state_path, "w");
     if (sf) {
         fprintf(sf, "%d %d %llu\n", sim_scenario_idx, sim_tick_in_scenario, g_redis_seq);
         fclose(sf);
     }
 
-    printf("[sim tick %d/%d] scenario=%d \"%s\" redis_seq=%llu overall=%s\n",
+    printf("[sim tick %d/%d] scenario=%d \"%s\" redis_seq=%llu redis_io=%ds overall=%s\n",
            sim_tick_in_scenario, sc->ticks,
            sim_scenario_idx, sc->scenario_name,
-           g_redis_seq, overall);
+           g_redis_seq, redis_io, overall);
 }
 
 int main(int argc, char *argv[]) {
@@ -852,7 +880,6 @@ int main(int argc, char *argv[]) {
     ensure_log_dir(cfg.log_file); ensure_log_dir(cfg.state_file);
 
     if (test_mode) {
-        /* Load config if available (non-fatal) */
         FILE *tcf = fopen(CONFIG_FILE_DEFAULT, "r");
         if (tcf) { fclose(tcf); load_config(CONFIG_FILE_DEFAULT, &cfg); }
         printf("SyncMon simulation running (interval=%ds, state=%s)\n"
