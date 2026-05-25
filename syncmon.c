@@ -409,32 +409,28 @@ uint16_t get_status_fg(const char* s, Theme* th) {
 }
 
 /*
- * draw_box_wave: draws the bottom border of a box with a travelling sine-like
- * wave through the horizontal line characters, to symbolise the dot squeezing
- * through.  wave_pos is the position of the wave peak (0 = left edge, box_w-1
- * = right edge).  When wave_pos < 0 the function draws a normal flat border.
+ * draw_box_wave: animates the bottom border of a box with a travelling
+ * sine-like wave to symbolise the dot squeezing through the wall.
+ * wave_pos is the 1-based interior column index of the wave peak.
+ * Pass wave_pos < 0 for no animation (flat border redraw).
  */
 static void draw_box_wave(int x, int y_bottom, int box_w, uint16_t fg, uint16_t bg,
                           int wave_pos)
 {
-    /* Wave shape: the "peak" cell uses a heavy block ━ (U+2501),
-       the two neighbours use light wavy ≈ (U+2248 repurposed as
-       a wave symbol), everything else stays ─ (U+2500).
-       Corner cells are left untouched.                              */
     for (int i = 1; i < box_w - 1; i++) {
         int d = i - wave_pos;
         uint32_t ch;
         uint16_t wfg = fg;
         if (d == 0) {
-            ch   = 0x2501;   /* ━ heavy horizontal */
-            wfg  = fg | TB_BOLD;
+            ch  = 0x2501;          /* ━ heavy horizontal – compression peak  */
+            wfg = fg | TB_BOLD;
         } else if (d == -1 || d == 1) {
-            ch   = 0x2508;   /* ┈ light quadruple-dash (dip) */
-            wfg  = fg | TB_BOLD;
+            ch  = 0x2508;          /* ┈ light quad-dash   – dip              */
+            wfg = fg | TB_BOLD;
         } else if (d == -2 || d == 2) {
-            ch   = 0x2504;   /* ┄ light triple-dash (ripple) */
+            ch  = 0x2504;          /* ┄ light triple-dash – outer ripple     */
         } else {
-            ch   = 0x2500;   /* ─ normal */
+            ch  = 0x2500;          /* ─ normal                               */
         }
         tb_set_cell(x + i, y_bottom, ch, wfg, bg);
     }
@@ -470,18 +466,6 @@ void draw_box(int x, int y, int w, int h, uint16_t fg, const char* title, Theme*
         tb_set_cell(tx+3+tl+1, y, 0x25C8, th->accent, th->bg);
         tb_set_cell(tx+3+tl+2, y, ' ', th->bg, th->bg);
     }
-}
-
-/*
- * draw_box_with_wave: same as draw_box but animates the bottom border.
- * wave_pos < 0 → no wave (normal static border).
- */
-static void draw_box_with_wave(int x, int y, int w, int h, uint16_t fg,
-                               const char* title, Theme* th, int wave_pos)
-{
-    draw_box(x, y, w, h, fg, title, th);
-    if (wave_pos >= 0)
-        draw_box_wave(x, y + h - 1, w, fg, th->bg, wave_pos);
 }
 
 void draw_corner_title_box(int x, int y, int w, int h,
@@ -762,11 +746,24 @@ void draw_endpoint_status_right(int px, int pw, int py,
 /*
  * draw_sync_path_between_hooks
  *
- * Changes vs original:
- *  1. Arrow fix: arrowhead placed at the last cell immediately before the
- *     status box (x2-1 for dir>0, x1+1 for dir<0) rather than x2-2 / x1+2.
- *  2. Wave animation: while the dot is inside the tunnel (tunnel_delay phase)
- *     the bottom border of the status box is animated with draw_box_wave.
+ * Static arrow decorations (drawn every frame, independent of dot position):
+ *   dir > 0  (left→right, MariaDB):
+ *     ↓  at (x1, hook_y)           – start of left vertical stem
+ *     ▶  at (box_x - 1, rail_y)    – entry into status box
+ *     ▶  at (box_x + box_w, rail_y) – exit from status box
+ *     ↑  at (x2, hook_y)           – end of right vertical stem (arrival)
+ *
+ *   dir < 0  (right→left, Redis):
+ *     ↓  at (x2, hook_y)           – start of right vertical stem
+ *     ◀  at (box_x + box_w, rail_y) – entry into status box
+ *     ◀  at (box_x - 1, rail_y)    – exit from status box
+ *     ↑  at (x1, hook_y)           – end of left vertical stem (arrival)
+ *
+ * Tunnel slow-down: tunnel_delay is multiplied by 3 so the dot spends
+ * 3× longer inside the status box than it spends crossing each gap segment.
+ *
+ * Wave animation: while the dot is inside the tunnel the bottom border of the
+ * status box pulses with a travelling sine-like wave.
  */
 void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
                                   int box_x, int box_y, int box_w, int box_h,
@@ -779,62 +776,78 @@ void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
     uint16_t col = get_status_fg(sync_status, th);
     if (x2 <= x1) return;
 
-    int rail_y = box_y + box_h / 2;
+    int rail_y    = box_y + box_h / 2;
     int left_gap  = box_x - x1;
     int right_gap = x2 - (box_x + box_w) + 1;
     if (left_gap  < 0) left_gap  = 0;
     if (right_gap < 0) right_gap = 0;
 
-    /* vertical stems */
+    /* ── vertical stems ── */
     for (int y = hook_y; y < rail_y; y++) {
         tb_set_cell(x1, y, 0x2502, th->skip, th->bg);
         tb_set_cell(x2, y, 0x2502, th->skip, th->bg);
     }
 
-    /* corners */
+    /* ── rail corners ── */
     tb_set_cell(x1, rail_y, 0x2514, th->skip, th->bg);
     tb_set_cell(x2, rail_y, 0x2518, th->skip, th->bg);
 
-    /* horizontal rails (skip over box) */
+    /* ── horizontal rails (skip over box interior) ── */
     for (int x = x1 + 1; x < x2; x++) {
         if (x < box_x || x >= box_x + box_w)
             tb_set_cell(x, rail_y, 0x2500, th->skip, th->bg);
     }
 
-    /* ── FIX: arrowhead at the last cell ADJACENT to the box ── */
-    if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
+    /* ────────────────────────────────────────────────────────────────
+     * Static arrowheads — drawn unconditionally on every frame so the
+     * directional markers are always visible regardless of dot position.
+     * ──────────────────────────────────────────────────────────────── */
+    int no_arrow = (strcmp(sync_status, "ERROR") == 0 ||
+                    strcmp(slave_status, "ERROR") == 0);
+
+    if (!no_arrow) {
         if (dir > 0) {
-            /* arrow points right → place ▶ at the cell just before the box */
-            int arr_x = box_x - 1;
-            if (arr_x > x1)
-                tb_set_cell(arr_x, rail_y, 0x25B6, col | TB_BOLD, th->bg);
-            int arr_x = box_x + box_w;
-            if (arr_x > x1)
-                tb_set_cell(arr_x, rail_y, 0x25B6, col | TB_BOLD, th->bg);
+            /* start: downward arrow at top of left stem */
+            tb_set_cell(x1, hook_y, 0x25BE, col | TB_BOLD, th->bg); /* ▾ */
+            /* box entry: rightward arrow just before left wall */
+            if (box_x - 1 > x1)
+                tb_set_cell(box_x - 1, rail_y, 0x25B6, col | TB_BOLD, th->bg);
+            /* box exit: rightward arrow just after right wall */
+            if (box_x + box_w < x2)
+                tb_set_cell(box_x + box_w, rail_y, 0x25B6, col | TB_BOLD, th->bg);
+            /* end: upward arrow at top of right stem (arrival) */
+            tb_set_cell(x2, hook_y, 0x25B4, col | TB_BOLD, th->bg); /* ▴ */
         } else {
-            /* arrow points left → place ◀ at the cell just after the box */
-            int arr_x = box_x + box_w;
-            if (arr_x < x2)
-                tb_set_cell(arr_x, rail_y, 0x25C0, col | TB_BOLD, th->bg);
-            int arr_x = box_x -1;
-            if (arr_x < x2)
-                tb_set_cell(arr_x, rail_y, 0x25C0, col | TB_BOLD, th->bg);
+            /* start: downward arrow at top of right stem */
+            tb_set_cell(x2, hook_y, 0x25BE, col | TB_BOLD, th->bg);
+            /* box entry: leftward arrow just after right wall */
+            if (box_x + box_w < x2)
+                tb_set_cell(box_x + box_w, rail_y, 0x25C0, col | TB_BOLD, th->bg);
+            /* box exit: leftward arrow just before left wall */
+            if (box_x - 1 > x1)
+                tb_set_cell(box_x - 1, rail_y, 0x25C0, col | TB_BOLD, th->bg);
+            /* end: upward arrow at top of left stem (arrival) */
+            tb_set_cell(x1, hook_y, 0x25B4, col | TB_BOLD, th->bg);
         }
     }
 
     if (strcmp(master_status, "ERROR") == 0) return;
 
+    /* ── animated dot ──
+     * tunnel_delay × 3: dot lingers 3× longer inside the box.           */
     int vert_len     = rail_y - hook_y;
-    int tunnel_delay = (box_w > 36) ? (box_w - 36) : 0;
-    int total_len    = vert_len + left_gap + tunnel_delay + right_gap + vert_len;
+    int tunnel_delay = ((box_w > 36) ? (box_w - 36) : 0) * 3 + box_w;
+    /* Minimum tunnel_delay ensures visible wave even for small boxes.    */
+    if (tunnel_delay < box_w) tunnel_delay = box_w;
+
+    int total_len = vert_len + left_gap + tunnel_delay + right_gap + vert_len;
     if (total_len <= 0) return;
 
     int pos   = tick % total_len;
     int dot_x = -1, dot_y = -1;
 
-    /* track whether the dot is inside the tunnel this frame */
-    int in_tunnel = 0;
-    int tunnel_phase_pos = 0; /* position within the tunnel [0, tunnel_delay) */
+    int in_tunnel        = 0;
+    int tunnel_phase_pos = 0;
 
     if (dir > 0) {
         if (pos < vert_len) {
@@ -846,8 +859,6 @@ void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
         } else if (pos < vert_len + left_gap + tunnel_delay) {
             in_tunnel        = 1;
             tunnel_phase_pos = pos - vert_len - left_gap;
-            dot_x = -1;
-            dot_y = -1;
         } else if (pos < vert_len + left_gap + tunnel_delay + right_gap) {
             dot_x = box_x + box_w + (pos - vert_len - left_gap - tunnel_delay);
             dot_y = rail_y;
@@ -856,7 +867,8 @@ void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
             dot_y = (rail_y - 1) - (pos - vert_len - left_gap - tunnel_delay - right_gap);
         }
 
-        if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) &&
+        if (!in_tunnel &&
+            (strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) &&
             dot_x > box_x + box_w / 2)
             dot_x = -1;
     } else {
@@ -869,8 +881,6 @@ void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
         } else if (pos < vert_len + right_gap + tunnel_delay) {
             in_tunnel        = 1;
             tunnel_phase_pos = pos - vert_len - right_gap;
-            dot_x = -1;
-            dot_y = -1;
         } else if (pos < vert_len + right_gap + tunnel_delay + left_gap) {
             dot_x = (box_x - 1) - (pos - vert_len - right_gap - tunnel_delay);
             dot_y = rail_y;
@@ -879,33 +889,32 @@ void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
             dot_y = (rail_y - 1) - (pos - vert_len - right_gap - tunnel_delay - left_gap);
         }
 
-        if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) &&
+        if (!in_tunnel &&
+            (strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) &&
             dot_x > -1 && dot_x < box_x + box_w / 2)
             dot_x = -1;
     }
 
-    /* ── Wave animation when dot is inside the box ── */
+    /* ── bottom-border wave while dot is inside the tunnel ── */
     if (in_tunnel && tunnel_delay > 0) {
-        /*
-         * Map tunnel_phase_pos (0…tunnel_delay-1) onto the interior width of
-         * the box bottom border (1…box_w-2), so the wave sweeps left-to-right
-         * for dir>0 and right-to-left for dir<0.
-         */
-        int interior = box_w - 2;  /* cells between corners */
+        int interior = box_w - 2;
         int wave_interior_pos;
         if (dir > 0)
-            wave_interior_pos = (tunnel_phase_pos * interior) / (tunnel_delay > 1 ? tunnel_delay - 1 : 1);
+            wave_interior_pos = (tunnel_phase_pos * interior) /
+                                (tunnel_delay > 1 ? tunnel_delay - 1 : 1);
         else
-            wave_interior_pos = interior - 1 - (tunnel_phase_pos * interior) / (tunnel_delay > 1 ? tunnel_delay - 1 : 1);
+            wave_interior_pos = interior - 1 -
+                                (tunnel_phase_pos * interior) /
+                                (tunnel_delay > 1 ? tunnel_delay - 1 : 1);
 
-        /* clamp */
-        if (wave_interior_pos < 0) wave_interior_pos = 0;
+        if (wave_interior_pos < 0)         wave_interior_pos = 0;
         if (wave_interior_pos >= interior) wave_interior_pos = interior - 1;
 
-        /* wave_pos passed to draw_box_wave is relative to cell (box_x+1) */
-        draw_box_wave(box_x, box_y + box_h - 1, box_w, col, th->bg, wave_interior_pos + 1);
+        draw_box_wave(box_x, box_y + box_h - 1, box_w, col, th->bg,
+                      wave_interior_pos + 1);
     }
 
+    /* ── draw the travelling dot ── */
     if (dot_x != -1 && dot_y != -1)
         tb_set_cell(dot_x, dot_y, 0x25C6, col | TB_BOLD, th->bg);
 }
