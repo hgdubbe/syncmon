@@ -267,9 +267,10 @@ static void compute_ai_analysis() {
         snprintf(ai_line2, sizeof(ai_line2), "Redis replication degraded - inspect payload handoff");
 
     char parts[MAX_VAL] = "";
-    if (strcmp(state.lb_ping_status, "OK") != strncat(parts, "LoadBalancer ", sizeof(parts)-strlen(parts)-1));
+    if (strcmp(state.lb_ping_status, "OK") != 0) strncat(parts, "LoadBalancer ", sizeof(parts)-strlen(parts)-1);
     if (strcmp(state.nc1_ping_status, "OK") != 0 || strcmp(state.nc2_ping_status, "OK") != 0) strncat(parts, "Nextcloud ", sizeof(parts)-strlen(parts)-1);
     if (strcmp(state.nfs_ping_status, "OK") != 0) strncat(parts, "NFS ", sizeof(parts)-strlen(parts)-1);
+    
     if (parts[0] == '\0')
         snprintf(ai_line3, sizeof(ai_line3), "Load balancer, Nextcloud nodes, and NFS are reachable");
     else
@@ -690,14 +691,6 @@ void draw_status_line_lr_flush(int x, int y, int w,
     tb_print_custom(right_x + 12, y, th->accent, th->bg, right_label);
 }
 
-/*
- * draw_continuous_sync_path
- *
- * The animated dot travels a closed loop. Instead of the box crossing taking zero 
- * ticks (which breaks the global timing since boxes have different widths), we introduce
- * a `tunnel_delay`. The delay pads the cycle length of wider boxes (like Redis) so that 
- * both MariaDB and Redis share exactly the same tick cycle and stay perfectly in sync.
- */
 void draw_continuous_sync_path(int x1, int x2, int hook_y,
                                int box_y, int box_h, int box_x, int box_w,
                                int dir,
@@ -712,40 +705,29 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y,
     int rail_y = box_y + box_h / 2;
 
     /* ── Static wire ────────────────────────────────────────────── */
-    /* Horizontal rail, skipping columns covered by the sync box */
     for (int x = x1; x <= x2; x++) {
         if (x < box_x || x >= box_x + box_w)
             tb_set_cell(x, rail_y, 0x2500, th->skip, th->bg);
     }
-    /* Vertical legs */
     for (int y = hook_y; y < rail_y; y++) {
         tb_set_cell(x1, y, 0x2502, th->skip, th->bg);
         tb_set_cell(x2, y, 0x2502, th->skip, th->bg);
     }
-    /* Corner joints */
     tb_set_cell(x1, rail_y, 0x2514, th->skip, th->bg);
     tb_set_cell(x2, rail_y, 0x2518, th->skip, th->bg);
 
     if (strcmp(master_status, "ERROR") == 0) return;
 
-    /* ── Visible segment lengths ────────────────────────────────── */
-    int vert_len  = rail_y - hook_y;          /* rows per vertical leg   */
-    int left_gap  = box_x - x1;               /* cols left of box on rail */
-    int right_gap = x2 - (box_x + box_w) + 1; /* cols right of box on rail */
+    int vert_len  = rail_y - hook_y;
+    int left_gap  = box_x - x1;
+    int right_gap = x2 - (box_x + box_w) + 1;
     if (left_gap  < 0) left_gap  = 0;
     if (right_gap < 0) right_gap = 0;
 
-    /*
-     * Delay inside the box to normalize cycle length to MariaDB's narrower box (36).
-     * This ensures Redis (44) takes the exact same time per cycle,
-     * keeping both loops in perfect synchronization.
-     */
     int tunnel_delay = (box_w > 36) ? (box_w - 36) : 0;
-
     int total_len = vert_len + left_gap + tunnel_delay + right_gap + vert_len;
     if (total_len <= 0) return;
 
-    /* Direction indicator arrow at the slave hook */
     if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
         if (dir > 0) tb_set_cell(x2, hook_y, 0x25B2, col | TB_BOLD, th->bg);
         else         tb_set_cell(x1, hook_y, 0x25B2, col | TB_BOLD, th->bg);
@@ -755,59 +737,45 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y,
     int dot_x = -1, dot_y = -1;
 
     if (dir > 0) {
-        /* MariaDB: master-left → slave-right */
         if (pos < vert_len) {
-            /* Phase 1: descend left leg */
             dot_x = x1;
             dot_y = hook_y + pos;
         } else if (pos < vert_len + left_gap) {
-            /* Phase 2: travel right, left of box */
             dot_x = x1 + (pos - vert_len);
             dot_y = rail_y;
         } else if (pos < vert_len + left_gap + tunnel_delay) {
-            /* Phase 3: inside box (teleport delay) */
             dot_x = -1;
             dot_y = -1;
         } else if (pos < vert_len + left_gap + tunnel_delay + right_gap) {
-            /* Phase 4: travel right, right of box */
             dot_x = box_x + box_w + (pos - vert_len - left_gap - tunnel_delay);
             dot_y = rail_y;
         } else {
-            /* Phase 5: ascend right leg */
             dot_x = x2;
             dot_y = (rail_y - 1) - (pos - vert_len - left_gap - tunnel_delay - right_gap);
         }
 
-        /* Suppress slave-side dot when sync/slave is in error */
         if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0)
                 && dot_x > box_x + box_w / 2)
             dot_x = -1;
 
     } else {
-        /* Redis: master-right → slave-left */
         if (pos < vert_len) {
-            /* Phase 1: descend right leg */
             dot_x = x2;
             dot_y = hook_y + pos;
         } else if (pos < vert_len + right_gap) {
-            /* Phase 2: travel left, right of box */
             dot_x = x2 - (pos - vert_len);
             dot_y = rail_y;
         } else if (pos < vert_len + right_gap + tunnel_delay) {
-            /* Phase 3: inside box (teleport delay) */
             dot_x = -1;
             dot_y = -1;
         } else if (pos < vert_len + right_gap + tunnel_delay + left_gap) {
-            /* Phase 4: travel left, left of box */
             dot_x = (box_x - 1) - (pos - vert_len - right_gap - tunnel_delay);
             dot_y = rail_y;
         } else {
-            /* Phase 5: ascend left leg */
             dot_x = x1;
             dot_y = (rail_y - 1) - (pos - vert_len - right_gap - tunnel_delay - left_gap);
         }
 
-        /* Suppress slave-side dot when sync/slave is in error */
         if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0)
                 && dot_x > -1 && dot_x < box_x + box_w / 2)
             dot_x = -1;
@@ -891,8 +859,6 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 
 void draw_ui(int anim_tick) {
     Theme* th = &themes[current_theme];
-    tb_set_clear_attrs(th->fg, th->bg);
-    tb_clear();
 
     int sw = tb_width();
     int bw = config.dash_w + 2;
@@ -1053,37 +1019,58 @@ int main(int argc, char** argv) {
 
     struct tb_event ev;
     uint64_t last_update = 0;
-    int anim_tick = 0;
+    int last_tick = -1;
+    int force_redraw = 1; // Trigger full clear on boot, resize, and theme swaps
 
     load_state();
     last_update = get_time_ms();
 
     while (keep_running) {
         uint64_t now = get_time_ms();
+        int new_tick = (now / 120) % 1000;
+
+        // Poll state file based on refresh configuration
         if (now - last_update >= (uint64_t)config.display_refresh * 1000) {
             load_state();
             last_update = now;
+            force_redraw = 1;
         }
 
-        anim_tick = (now / 120) % 1000;
-        draw_ui(anim_tick);
+        // Only redraw if the animation tick actually changed or we forced a clear
+        if (new_tick != last_tick || force_redraw) {
+            if (force_redraw) {
+                Theme* th = &themes[current_theme];
+                tb_set_clear_attrs(th->fg, th->bg);
+                tb_clear(); // Clear back buffer only when necessary
+            }
+            draw_ui(new_tick);
+            last_tick = new_tick;
+            force_redraw = 0;
+        }
 
-        int res = tb_peek_event(&ev, 100);
+        // Calculate sleep time until the exact next 120ms frame boundary
+        uint64_t next_frame = ((now / 120) + 1) * 120;
+        uint64_t current = get_time_ms();
+        int wait_ms = current >= next_frame ? 1 : (int)(next_frame - current);
+
+        int res = tb_peek_event(&ev, wait_ms);
         if (res == TB_OK) {
-            if (theme_menu_open) {
+            if (ev.type == TB_EVENT_RESIZE) {
+                force_redraw = 1;
+            } else if (theme_menu_open) {
                 if (ev.type == TB_EVENT_KEY) {
-                    if      (ev.key == TB_KEY_ARROW_UP)   theme_menu_sel = (theme_menu_sel - 1 + num_themes) % num_themes;
-                    else if (ev.key == TB_KEY_ARROW_DOWN) theme_menu_sel = (theme_menu_sel + 1) % num_themes;
-                    else if (ev.key == TB_KEY_ENTER)      { current_theme = theme_menu_sel; theme_menu_open = 0; }
-                    else if (ev.key == TB_KEY_ESC || ev.ch == 'q') theme_menu_open = 0;
+                    if      (ev.key == TB_KEY_ARROW_UP)   { theme_menu_sel = (theme_menu_sel - 1 + num_themes) % num_themes; force_redraw = 1; }
+                    else if (ev.key == TB_KEY_ARROW_DOWN) { theme_menu_sel = (theme_menu_sel + 1) % num_themes; force_redraw = 1; }
+                    else if (ev.key == TB_KEY_ENTER)      { current_theme = theme_menu_sel; theme_menu_open = 0; force_redraw = 1; }
+                    else if (ev.key == TB_KEY_ESC || ev.ch == 'q') { theme_menu_open = 0; force_redraw = 1; }
                 }
             } else {
                 if (ev.type == TB_EVENT_KEY) {
                     if      (ev.ch == 'q' || ev.key == TB_KEY_CTRL_C) break;
-                    else if (ev.ch == 'g') config.use_braille = !config.use_braille;
-                    else if (ev.ch == 't') { theme_menu_sel = current_theme; theme_menu_open = 1; }
-                    else if (ev.ch == 's') config.spinner_style = (config.spinner_style + 1) % 4;
-                    else if (ev.ch == 'a') config.show_ai = !config.show_ai;
+                    else if (ev.ch == 'g') { config.use_braille = !config.use_braille; force_redraw = 1; }
+                    else if (ev.ch == 't') { theme_menu_sel = current_theme; theme_menu_open = 1; force_redraw = 1; }
+                    else if (ev.ch == 's') { config.spinner_style = (config.spinner_style + 1) % 4; force_redraw = 1; }
+                    else if (ev.ch == 'a') { config.show_ai = !config.show_ai; force_redraw = 1; }
                 }
             }
         }
