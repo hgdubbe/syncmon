@@ -267,7 +267,7 @@ static void compute_ai_analysis() {
         snprintf(ai_line2, sizeof(ai_line2), "Redis replication degraded - inspect payload handoff");
 
     char parts[MAX_VAL] = "";
-    if (strcmp(state.lb_ping_status, "OK") != 0) strncat(parts, "LoadBalancer ", sizeof(parts)-strlen(parts)-1);
+    if (strcmp(state.lb_ping_status, "OK") != strncat(parts, "LoadBalancer ", sizeof(parts)-strlen(parts)-1);)
     if (strcmp(state.nc1_ping_status, "OK") != 0 || strcmp(state.nc2_ping_status, "OK") != 0) strncat(parts, "Nextcloud ", sizeof(parts)-strlen(parts)-1);
     if (strcmp(state.nfs_ping_status, "OK") != 0) strncat(parts, "NFS ", sizeof(parts)-strlen(parts)-1);
     if (parts[0] == '\0')
@@ -693,21 +693,10 @@ void draw_status_line_lr_flush(int x, int y, int w,
 /*
  * draw_continuous_sync_path
  *
- * The animated dot travels a closed loop with the sync-info box treated as
- * a "tunnel": the dot disappears at the left edge of the box and reappears
- * immediately at the right edge on the SAME tick — no pause, no false reset.
- *
- * This is achieved by building a "visible segment" list that skips the
- * hidden columns, so total_len counts only the columns where the dot
- * is actually rendered.  The box crossing therefore consumes ZERO ticks.
- *
- * Loop geometry (dir > 0, MariaDB example):
- *   Seg 0 : left vertical leg     x=x1,  y = hook_y .. rail_y-1   (vert_len steps)
- *   Seg 1 : rail left of box      y=rail, x = x1    .. box_x-1    (left_gap steps)
- *   Seg 2 : rail right of box     y=rail, x = box_x+box_w .. x2   (right_gap steps)
- *   Seg 3 : right vertical leg    x=x2,  y = rail_y .. hook_y+1   (vert_len steps)
- *
- * For dir < 0 (Redis) the direction along the rail is reversed.
+ * The animated dot travels a closed loop. Instead of the box crossing taking zero 
+ * ticks (which breaks the global timing since boxes have different widths), we introduce
+ * a `tunnel_delay`. The delay pads the cycle length of wider boxes (like Redis) so that 
+ * both MariaDB and Redis share exactly the same tick cycle and stay perfectly in sync.
  */
 void draw_continuous_sync_path(int x1, int x2, int hook_y,
                                int box_y, int box_h, int box_x, int box_w,
@@ -741,16 +730,19 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y,
 
     /* ── Visible segment lengths ────────────────────────────────── */
     int vert_len  = rail_y - hook_y;          /* rows per vertical leg   */
-    int left_gap  = box_x - x1;              /* cols left of box on rail */
-    int right_gap = x2 - (box_x + box_w);   /* cols right of box on rail */
+    int left_gap  = box_x - x1;               /* cols left of box on rail */
+    int right_gap = x2 - (box_x + box_w) + 1; /* cols right of box on rail */
     if (left_gap  < 0) left_gap  = 0;
     if (right_gap < 0) right_gap = 0;
 
     /*
-     * total_len = only the VISIBLE columns / rows.
-     * The box interior is a zero-cost tunnel — the dot teleports.
+     * Delay inside the box to normalize cycle length to MariaDB's narrower box (36).
+     * This ensures Redis (44) takes the exact same time per cycle,
+     * keeping both loops in perfect synchronization.
      */
-    int total_len = vert_len + left_gap + right_gap + vert_len;
+    int tunnel_delay = (box_w > 36) ? (box_w - 36) : 0;
+
+    int total_len = vert_len + left_gap + tunnel_delay + right_gap + vert_len;
     if (total_len <= 0) return;
 
     /* Direction indicator arrow at the slave hook */
@@ -772,14 +764,18 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y,
             /* Phase 2: travel right, left of box */
             dot_x = x1 + (pos - vert_len);
             dot_y = rail_y;
-        } else if (pos < vert_len + left_gap + right_gap) {
-            /* Phase 3: travel right, right of box (teleport over box) */
-            dot_x = box_x + box_w + (pos - vert_len - left_gap);
+        } else if (pos < vert_len + left_gap + tunnel_delay) {
+            /* Phase 3: inside box (teleport delay) */
+            dot_x = -1;
+            dot_y = -1;
+        } else if (pos < vert_len + left_gap + tunnel_delay + right_gap) {
+            /* Phase 4: travel right, right of box */
+            dot_x = box_x + box_w + (pos - vert_len - left_gap - tunnel_delay);
             dot_y = rail_y;
         } else {
-            /* Phase 4: ascend right leg */
+            /* Phase 5: ascend right leg */
             dot_x = x2;
-            dot_y = rail_y - (pos - vert_len - left_gap - right_gap);
+            dot_y = (rail_y - 1) - (pos - vert_len - left_gap - tunnel_delay - right_gap);
         }
 
         /* Suppress slave-side dot when sync/slave is in error */
@@ -797,19 +793,23 @@ void draw_continuous_sync_path(int x1, int x2, int hook_y,
             /* Phase 2: travel left, right of box */
             dot_x = x2 - (pos - vert_len);
             dot_y = rail_y;
-        } else if (pos < vert_len + right_gap + left_gap) {
-            /* Phase 3: travel left, left of box (teleport over box) */
-            dot_x = box_x - 1 - (pos - vert_len - right_gap);
+        } else if (pos < vert_len + right_gap + tunnel_delay) {
+            /* Phase 3: inside box (teleport delay) */
+            dot_x = -1;
+            dot_y = -1;
+        } else if (pos < vert_len + right_gap + tunnel_delay + left_gap) {
+            /* Phase 4: travel left, left of box */
+            dot_x = (box_x - 1) - (pos - vert_len - right_gap - tunnel_delay);
             dot_y = rail_y;
         } else {
-            /* Phase 4: ascend left leg */
+            /* Phase 5: ascend left leg */
             dot_x = x1;
-            dot_y = rail_y - (pos - vert_len - right_gap - left_gap);
+            dot_y = (rail_y - 1) - (pos - vert_len - right_gap - tunnel_delay - left_gap);
         }
 
         /* Suppress slave-side dot when sync/slave is in error */
         if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0)
-                && dot_x < box_x + box_w / 2)
+                && dot_x > -1 && dot_x < box_x + box_w / 2)
             dot_x = -1;
     }
 
