@@ -140,11 +140,11 @@ int keep_running = 1;
 
 int hist_mysql[HIST_SIZE];
 int hist_redis[HIST_SIZE];
-int hist_lb_ping[HIST_SIZE];
-int hist_nc1_ping[HIST_SIZE];
-int hist_nc2_ping[HIST_SIZE];
-int hist_nfs_ping[HIST_SIZE];
-int hist_dns_ping[HIST_SIZE];
+int hist_lb_status[HIST_SIZE];
+int hist_nc1_status[HIST_SIZE];
+int hist_nc2_status[HIST_SIZE];
+int hist_nfs_status[HIST_SIZE];
+int hist_dns_status[HIST_SIZE];
 int hist_idx = 0;
 
 static char ai_line1[MAX_VAL] = "";
@@ -192,13 +192,6 @@ int status_to_val(const char* s) {
     if (strcmp(s, "WARN") == 0) return 2;
     if (strcmp(s, "ERROR") == 0) return 0;
     return -1;
-}
-
-int parse_ping_ms(const char* s) {
-    if (!s || !*s) return -1;
-    while (*s && !isdigit((unsigned char)*s)) s++;
-    if (!*s) return -1;
-    return atoi(s);
 }
 
 static void derive_check_status(const char* check, char* out, size_t sz) {
@@ -344,13 +337,22 @@ void load_state() {
     LOAD_COMP(nfs, "NFS")
 #undef LOAD_COMP
 
-    hist_mysql[hist_idx]    = status_to_val(state.m_sync);
-    hist_redis[hist_idx]    = status_to_val(state.r_sync);
-    hist_lb_ping[hist_idx]  = parse_ping_ms(state.lb_ping);
-    hist_nc1_ping[hist_idx] = parse_ping_ms(state.nc1_ping);
-    hist_nc2_ping[hist_idx] = parse_ping_ms(state.nc2_ping);
-    hist_nfs_ping[hist_idx] = parse_ping_ms(state.nfs_ping);
-    hist_dns_ping[hist_idx] = parse_ping_ms(state.dns_ping);
+    hist_mysql[hist_idx] = status_to_val(state.m_sync);
+    hist_redis[hist_idx] = status_to_val(state.r_sync);
+
+    char chk_lb[16], chk_nc1[16], chk_nc2[16], chk_nfs[16], chk_dns[16];
+    derive_check_status(state.lb_check, chk_lb, sizeof(chk_lb));
+    derive_check_status(state.nc1_check, chk_nc1, sizeof(chk_nc1));
+    derive_check_status(state.nc2_check, chk_nc2, sizeof(chk_nc2));
+    derive_check_status(state.nfs_check, chk_nfs, sizeof(chk_nfs));
+    derive_check_status(state.dns_check, chk_dns, sizeof(chk_dns));
+
+    hist_lb_status[hist_idx]  = status_to_val(chk_lb);
+    hist_nc1_status[hist_idx] = status_to_val(chk_nc1);
+    hist_nc2_status[hist_idx] = status_to_val(chk_nc2);
+    hist_nfs_status[hist_idx] = status_to_val(chk_nfs);
+    hist_dns_status[hist_idx] = status_to_val(chk_dns);
+    
     hist_idx = (hist_idx + 1) % HIST_SIZE;
 
     compute_ai_analysis();
@@ -409,14 +411,11 @@ uint16_t get_status_fg(const char* s, Theme* th) {
 }
 
 /*
- * draw_box_wave: animates the bottom border of a box with a travelling
+ * draw_box_wave: animates a border of a box with a travelling
  * sine-like wave to symbolise the dot squeezing through the wall.
  * wave_pos is the 1-based interior column index of the wave peak.
- * Pass wave_pos < 0 for no animation (flat border redraw).
  */
-static void draw_box_wave(int x, int y_bottom, int box_w, uint16_t fg, uint16_t bg,
-                          int wave_pos)
-{
+static void draw_box_wave(int x, int y_border, int box_w, uint16_t fg, uint16_t bg, int wave_pos) {
     for (int i = 1; i < box_w - 1; i++) {
         int d = i - wave_pos;
         uint32_t ch;
@@ -432,7 +431,7 @@ static void draw_box_wave(int x, int y_bottom, int box_w, uint16_t fg, uint16_t 
         } else {
             ch  = 0x2500;          /* ─ normal                               */
         }
-        tb_set_cell(x + i, y_bottom, ch, wfg, bg);
+        tb_set_cell(x + i, y_border, ch, wfg, bg);
     }
 }
 
@@ -487,9 +486,9 @@ void draw_corner_title_box(int x, int y, int w, int h,
     int rx = x + w - rl - 2;
     if (rx < cx + cl + 4) rx = cx + cl + 4;
 
-    tb_print_custom(x + 1, y, th->accent, th->bg, left_title);
+    tb_print_custom(x + 1, y, th->hdr_fg | TB_BOLD, th->bg, left_title);
     tb_print_custom(cx,    y, th->hdr_fg | TB_BOLD, th->bg, center_title);
-    tb_print_custom(rx,    y, th->accent, th->bg, right_title);
+    tb_print_custom(rx,    y, th->hdr_fg | TB_BOLD, th->bg, right_title);
 }
 
 void draw_header_box(int x, int y, int w, int h, Theme* th) {
@@ -553,51 +552,32 @@ void draw_status_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
         idx %= HIST_SIZE;
         int v = hd[idx];
 
-        if (v == -1) { tb_set_cell(x+c, y, 0x2508, th->skip, th->bg); continue; }
-        if (v == 0)  { tb_set_cell(x+c, y, 0x2588, th->err|TB_BOLD, th->bg); continue; }
-
-        uint16_t col = (v == 2) ? th->warn : th->ok;
-        if (config.use_braille) tb_set_cell(x+c, y, braille_bar(v, v), col, th->bg);
-        else {
-            uint32_t ch = (v == 2) ? 0x2585 : 0x2588;
-            tb_set_cell(x+c, y, ch, col, th->bg);
-        }
-    }
-}
-
-void draw_ping_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
-    for (int c = 0; c < mw; c++) {
-        int idx = head - 1 - (mw - 1 - c);
-        while (idx < 0) idx += HIST_SIZE;
-        idx %= HIST_SIZE;
-        int v = hd[idx];
-
-        if (v == -1) {
-            tb_set_cell(x+c, y, 0x2508, th->skip, th->bg);
-            continue;
-        }
-        if (v < 0) {
-            tb_set_cell(x+c, y, 0x2588, th->err|TB_BOLD, th->bg);
-            continue;
-        }
-
-        int h;
         uint16_t col;
-        if (v == 0) {
-            h = 1; col = th->warn;
-        } else if (v <= 30) {
-            h = 4; col = th->ok;
-        } else if (v <= 100) {
-            h = 2; col = th->warn;
-        } else {
-            h = 1; col = th->err;
+        uint32_t braille_ch;
+        uint32_t block_ch;
+
+        if (v == 4) { // OK -> Good color, 8 dots high (4 rows)
+            col = th->ok;
+            braille_ch = braille_bar(4, 4);
+            block_ch = 0x2588; // Full block
+        } else if (v == 2) { // WARN -> Warn color, 6 dots high (3 rows)
+            col = th->warn;
+            braille_ch = braille_bar(3, 3);
+            block_ch = 0x2586; // 3/4 block
+        } else if (v == 0) { // ERROR -> Error color, 2 dots high (1 row)
+            col = th->err;
+            braille_ch = braille_bar(1, 1);
+            block_ch = 0x2582; // 1/4 block
+        } else { // SKIP/UNKNOWN -> Grayed out, 1 dot high (bottom left dot)
+            col = th->skip;
+            braille_ch = 0x2840; // dot 7
+            block_ch = 0x2581; // 1/8 block
         }
 
         if (config.use_braille) {
-            tb_set_cell(x+c, y, braille_bar(h, h), col, th->bg);
+            tb_set_cell(x+c, y, braille_ch, col, th->bg);
         } else {
-            static const uint32_t blocks[] = {0x2582, 0x2584, 0x2586, 0x2588};
-            tb_set_cell(x+c, y, blocks[h-1], col, th->bg);
+            tb_set_cell(x+c, y, block_ch, col, th->bg);
         }
     }
 }
@@ -665,546 +645,4 @@ void draw_node_panel(int x, int y, int w, int h,
     derive_check_status(check, chk_status, sizeof(chk_status));
 
     tb_print_custom(label_x, y+2, th->accent, th->bg, "Check :");
-    draw_badge(badge_x, y+2, chk_status, th);
-    draw_glow_bar(bar_x, y+2, chk_status, th, bar_w);
-    tb_print_fixed(text_x, y+2, get_status_fg(chk_status, th), th->bg, check, text_w);
-
-    char buf[MAX_VAL];
-    snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, chk_ts);
-    tb_print_fixed(label_x, y+3, th->skip, th->bg, buf, w-4);
-}
-
-void draw_vertical_text(int x, int y, const char* s, uint16_t fg, uint16_t bg) {
-    for (int i = 0; s[i]; i++) tb_set_cell(x, y + i, (uint32_t)(unsigned char)s[i], fg, bg);
-}
-
-void draw_center_sync_status(int x, int y, int w, const char* label, const char* status, Theme* th) {
-    int ll = (int)strlen(label);
-    int total = ll + 2 + 9;
-    int sx = x + (w - total) / 2;
-    if (sx < x + 1) sx = x + 1;
-
-    tb_print_custom(sx, y, th->accent, th->bg, label);
-    tb_print_custom(sx + ll + 1, y, th->fg, th->bg, ":");
-    draw_badge(sx + ll + 3, y, status, th);
-}
-
-void draw_endpoint_status_left(int px, int py,
-                               const char* role,
-                               const char* ping_status,
-                               const char* check_status,
-                               Theme* th,
-                               int* hook_x,
-                               int* hook_y)
-{
-    int role_x  = px + 1;
-    int text_x  = px + 3;
-    int colon_x = px + 9;
-    int badge_x = px + 11;
-
-    draw_vertical_text(role_x, py, role, th->accent, th->bg);
-
-    tb_print_custom(text_x, py,   th->accent, th->bg, "Ping");
-    tb_print_custom(colon_x, py,  th->fg,     th->bg, ":");
-    draw_badge(badge_x, py, ping_status, th);
-
-    tb_print_custom(text_x, py+1, th->accent, th->bg, "Check");
-    tb_print_custom(colon_x, py+1, th->fg,    th->bg, ":");
-    draw_badge(badge_x, py+1, check_status, th);
-
-    *hook_x = badge_x + 4;
-    *hook_y = py + 2;
-}
-
-void draw_endpoint_status_right(int px, int pw, int py,
-                                const char* role,
-                                const char* ping_status,
-                                const char* check_status,
-                                Theme* th,
-                                int* hook_x,
-                                int* hook_y)
-{
-    int role_x  = px + pw - 2;
-    int badge_x = px + pw - 21;
-    int colon_x = badge_x + 10;
-    int text_x  = badge_x + 12;
-
-    draw_badge(badge_x, py, ping_status, th);
-    tb_print_custom(colon_x, py, th->fg, th->bg, ":");
-    tb_print_custom(text_x, py, th->accent, th->bg, "Ping");
-
-    draw_badge(badge_x, py+1, check_status, th);
-    tb_print_custom(colon_x, py+1, th->fg, th->bg, ":");
-    tb_print_custom(text_x, py+1, th->accent, th->bg, "Check");
-
-    draw_vertical_text(role_x, py, role, th->accent, th->bg);
-
-    *hook_x = badge_x + 4;
-    *hook_y = py + 2;
-}
-
-/*
- * draw_sync_path_between_hooks
- *
- * Static arrow decorations (drawn every frame, independent of dot position):
- *   dir > 0  (left→right, MariaDB):
- *     ↓  at (x1, hook_y)           – start of left vertical stem
- *     ▶  at (box_x - 1, rail_y)    – entry into status box
- *     ▶  at (box_x + box_w, rail_y) – exit from status box
- *     ↑  at (x2, hook_y)           – end of right vertical stem (arrival)
- *
- *   dir < 0  (right→left, Redis):
- *     ↓  at (x2, hook_y)           – start of right vertical stem
- *     ◀  at (box_x + box_w, rail_y) – entry into status box
- *     ◀  at (box_x - 1, rail_y)    – exit from status box
- *     ↑  at (x1, hook_y)           – end of left vertical stem (arrival)
- *
- * Tunnel slow-down: tunnel_delay is multiplied by 3 so the dot spends
- * 3× longer inside the status box than it spends crossing each gap segment.
- *
- * Wave animation: while the dot is inside the tunnel the bottom border of the
- * status box pulses with a travelling sine-like wave.
- */
-void draw_sync_path_between_hooks(int x1, int x2, int hook_y,
-                                  int box_x, int box_y, int box_w, int box_h,
-                                  int dir,
-                                  const char* master_status,
-                                  const char* sync_status,
-                                  const char* slave_status,
-                                  Theme* th, int tick)
-{
-    uint16_t col = get_status_fg(sync_status, th);
-    if (x2 <= x1) return;
-
-    int rail_y    = box_y + box_h / 2;
-    int left_gap  = box_x - x1;
-    int right_gap = x2 - (box_x + box_w) + 1;
-    if (left_gap  < 0) left_gap  = 0;
-    if (right_gap < 0) right_gap = 0;
-
-    /* ── vertical stems ── */
-    for (int y = hook_y; y < rail_y; y++) {
-        tb_set_cell(x1, y, 0x2502, th->skip, th->bg);
-        tb_set_cell(x2, y, 0x2502, th->skip, th->bg);
-    }
-
-    /* ── rail corners ── */
-    tb_set_cell(x1, rail_y, 0x2514, th->skip, th->bg);
-    tb_set_cell(x2, rail_y, 0x2518, th->skip, th->bg);
-
-    /* ── horizontal rails (skip over box interior) ── */
-    for (int x = x1 + 1; x < x2; x++) {
-        if (x < box_x || x >= box_x + box_w)
-            tb_set_cell(x, rail_y, 0x2500, th->skip, th->bg);
-    }
-
-    /* ────────────────────────────────────────────────────────────────
-     * Static arrowheads — drawn unconditionally on every frame so the
-     * directional markers are always visible regardless of dot position.
-     * ──────────────────────────────────────────────────────────────── */
-    int no_arrow = (strcmp(sync_status, "ERROR") == 0 ||
-                    strcmp(slave_status, "ERROR") == 0);
-
-    if (!no_arrow) {
-        if (dir > 0) {
-            /* start: downward arrow at top of left stem */
-            tb_set_cell(x1, hook_y, 0x25BE, col | TB_BOLD, th->bg); /* ▾ */
-            /* box entry: rightward arrow just before left wall */
-            if (box_x - 1 > x1)
-                tb_set_cell(box_x - 1, rail_y, 0x25B6, col | TB_BOLD, th->bg);
-            /* box exit: rightward arrow just after right wall */
-            if (box_x + box_w < x2)
-                tb_set_cell(box_x + box_w, rail_y, 0x25B6, col | TB_BOLD, th->bg);
-            /* end: upward arrow at top of right stem (arrival) */
-            tb_set_cell(x2, hook_y, 0x25B4, col | TB_BOLD, th->bg); /* ▴ */
-        } else {
-            /* start: downward arrow at top of right stem */
-            tb_set_cell(x2, hook_y, 0x25BE, col | TB_BOLD, th->bg);
-            /* box entry: leftward arrow just after right wall */
-            if (box_x + box_w < x2)
-                tb_set_cell(box_x + box_w, rail_y, 0x25C0, col | TB_BOLD, th->bg);
-            /* box exit: leftward arrow just before left wall */
-            if (box_x - 1 > x1)
-                tb_set_cell(box_x - 1, rail_y, 0x25C0, col | TB_BOLD, th->bg);
-            /* end: upward arrow at top of left stem (arrival) */
-            tb_set_cell(x1, hook_y, 0x25B4, col | TB_BOLD, th->bg);
-        }
-    }
-
-    if (strcmp(master_status, "ERROR") == 0) return;
-
-    /* ── animated dot ──
-     * tunnel_delay × 3: dot lingers 3× longer inside the box.           */
-    int vert_len     = rail_y - hook_y;
-    int tunnel_delay = ((box_w > 36) ? (box_w - 36) : 0) * 3 + box_w;
-    /* Minimum tunnel_delay ensures visible wave even for small boxes.    */
-    if (tunnel_delay < box_w) tunnel_delay = box_w;
-
-    int total_len = vert_len + left_gap + tunnel_delay + right_gap + vert_len;
-    if (total_len <= 0) return;
-
-    int pos   = tick % total_len;
-    int dot_x = -1, dot_y = -1;
-
-    int in_tunnel        = 0;
-    int tunnel_phase_pos = 0;
-
-    if (dir > 0) {
-        if (pos < vert_len) {
-            dot_x = x1;
-            dot_y = hook_y + pos;
-        } else if (pos < vert_len + left_gap) {
-            dot_x = x1 + (pos - vert_len);
-            dot_y = rail_y;
-        } else if (pos < vert_len + left_gap + tunnel_delay) {
-            in_tunnel        = 1;
-            tunnel_phase_pos = pos - vert_len - left_gap;
-        } else if (pos < vert_len + left_gap + tunnel_delay + right_gap) {
-            dot_x = box_x + box_w + (pos - vert_len - left_gap - tunnel_delay);
-            dot_y = rail_y;
-        } else {
-            dot_x = x2;
-            dot_y = (rail_y - 1) - (pos - vert_len - left_gap - tunnel_delay - right_gap);
-        }
-
-        if (!in_tunnel &&
-            (strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) &&
-            dot_x > box_x + box_w / 2)
-            dot_x = -1;
-    } else {
-        if (pos < vert_len) {
-            dot_x = x2;
-            dot_y = hook_y + pos;
-        } else if (pos < vert_len + right_gap) {
-            dot_x = x2 - (pos - vert_len);
-            dot_y = rail_y;
-        } else if (pos < vert_len + right_gap + tunnel_delay) {
-            in_tunnel        = 1;
-            tunnel_phase_pos = pos - vert_len - right_gap;
-        } else if (pos < vert_len + right_gap + tunnel_delay + left_gap) {
-            dot_x = (box_x - 1) - (pos - vert_len - right_gap - tunnel_delay);
-            dot_y = rail_y;
-        } else {
-            dot_x = x1;
-            dot_y = (rail_y - 1) - (pos - vert_len - right_gap - tunnel_delay - left_gap);
-        }
-
-        if (!in_tunnel &&
-            (strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) &&
-            dot_x > -1 && dot_x < box_x + box_w / 2)
-            dot_x = -1;
-    }
-
-    /* ── bottom-border wave while dot is inside the tunnel ── */
-    if (in_tunnel && tunnel_delay > 0) {
-        int interior = box_w - 2;
-        int wave_interior_pos;
-        if (dir > 0)
-            wave_interior_pos = (tunnel_phase_pos * interior) /
-                                (tunnel_delay > 1 ? tunnel_delay - 1 : 1);
-        else
-            wave_interior_pos = interior - 1 -
-                                (tunnel_phase_pos * interior) /
-                                (tunnel_delay > 1 ? tunnel_delay - 1 : 1);
-
-        if (wave_interior_pos < 0)         wave_interior_pos = 0;
-        if (wave_interior_pos >= interior) wave_interior_pos = interior - 1;
-
-        draw_box_wave(box_x, box_y + box_h - 1, box_w, col, th->bg,
-                      wave_interior_pos + 1);
-    }
-
-    /* ── draw the travelling dot ── */
-    if (dot_x != -1 && dot_y != -1)
-        tb_set_cell(dot_x, dot_y, 0x25C6, col | TB_BOLD, th->bg);
-}
-
-void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th) {
-    draw_corner_title_box(x, y, w, h, state.m_m_ep, "MariaDB", state.m_s_ep, th->box2, th);
-
-    int info_y = y + 1;
-    int left_hook_x, left_hook_y;
-    int right_hook_x, right_hook_y;
-
-    draw_endpoint_status_left(x, info_y, "Master", "N/A", state.m_m_status, th, &left_hook_x, &left_hook_y);
-    draw_endpoint_status_right(x, w, info_y, "Slave",  "N/A", state.m_s_status, th, &right_hook_x, &right_hook_y);
-
-    draw_center_sync_status(x, y + 1, w, "Sync", state.m_sync, th);
-
-    int box_w = 38;
-    int box_h = 4;
-    int box_x = x + (w - box_w) / 2;
-    int box_y = y + 2;
-
-    uint16_t sync_col = get_status_fg(state.m_sync, th);
-    draw_box(box_x, box_y, box_w, box_h, sync_col, NULL, th);
-
-    char buf[MAX_VAL];
-    format_shortened_left(buf, sizeof(buf), "M-GTID: ", state.m_m_gtid, box_w - 4);
-    tb_print_fixed(box_x + 2, box_y + 1, th->skip, th->bg, buf, box_w - 4);
-
-    format_shortened_left(buf, sizeof(buf), "S-GTID: ", state.m_s_gtid, box_w - 4);
-    tb_print_fixed(box_x + 2, box_y + 2, th->ok, th->bg, buf, box_w - 4);
-
-    draw_sync_path_between_hooks(left_hook_x, right_hook_x, left_hook_y,
-                                 box_x, box_y, box_w, box_h,
-                                 1, state.m_m_status, state.m_sync, state.m_s_status, th, anim_tick);
-
-    snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.m_chk);
-    tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
-}
-
-void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th) {
-    draw_corner_title_box(x, y, w, h, state.r_s_ep, "Redis", state.r_m_ep, th->box2, th);
-
-    int info_y = y + 1;
-    int left_hook_x, left_hook_y;
-    int right_hook_x, right_hook_y;
-
-    draw_endpoint_status_left(x, info_y, "Slave",  "N/A", state.r_s_status, th, &left_hook_x, &left_hook_y);
-    draw_endpoint_status_right(x, w, info_y, "Master", "N/A", state.r_m_status, th, &right_hook_x, &right_hook_y);
-
-    draw_center_sync_status(x, y + 1, w, "Repl", state.r_sync, th);
-
-    int box_w = 46;
-    int box_h = 4;
-    int box_x = x + (w - box_w) / 2;
-    int box_y = y + 2;
-
-    uint16_t sync_col = get_status_fg(state.r_sync, th);
-    draw_box(box_x, box_y, box_w, box_h, sync_col, NULL, th);
-
-    char buf[MAX_VAL];
-    format_shortened_left(buf, sizeof(buf), "Sent : ", state.r_sent, box_w - 4);
-    tb_print_fixed(box_x + 2, box_y + 1, th->skip, th->bg, buf, box_w - 4);
-
-    int payload_match = (strcmp(state.r_sent, state.r_recv) == 0 &&
-                         strcmp(state.r_sent, "(none)") != 0);
-    uint16_t recv_col = payload_match ? th->ok : th->warn;
-    if (strcmp(state.r_s_status, "ERROR") == 0 || strcmp(state.r_recv, "(no data)") == 0)
-        recv_col = th->err;
-
-    format_shortened_left(buf, sizeof(buf), "Recv : ", state.r_recv, box_w - 4);
-    tb_print_fixed(box_x + 2, box_y + 2, recv_col, th->bg, buf, box_w - 4);
-
-    draw_sync_path_between_hooks(left_hook_x, right_hook_x, left_hook_y,
-                                 box_x, box_y, box_w, box_h,
-                                 -1, state.r_m_status, state.r_sync, state.r_s_status, th, anim_tick);
-
-    snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.r_chk);
-    tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
-}
-
-void draw_ui(int anim_tick) {
-    Theme* th = &themes[current_theme];
-
-    int sw = tb_width();
-    int bw = config.dash_w + 2;
-    int bx = (sw - bw) / 2;
-    if (bx < 0) bx = 0;
-
-    char buf[1024];
-    int y = 0;
-
-    draw_header_box(bx, y, bw, 3, th);
-    snprintf(buf, sizeof(buf), "%s SYNCMON %s  Nextcloud HA Cluster Monitor", SYM_AI, SYM_AI);
-    tb_print_center(bx+1, y+1, th->hdr_fg|TB_BOLD, th->hdr_bg, buf, bw-2);
-
-    const char* spin = get_spinner(anim_tick);
-    snprintf(buf, sizeof(buf), "%s Refresh %ds  Updated: %s %s", spin, config.display_refresh, state.timestamp, spin);
-    tb_print_center(bx+1, y+2, th->accent, th->hdr_bg, buf, bw-2);
-
-    y = 4;
-    int ov_h = 6;
-    draw_box(bx, y, bw, ov_h, th->box1, "Overview", th);
-
-    tb_print_custom(bx+2, y+1, th->fg, th->bg, "Overall Status:");
-    draw_badge(bx+18, y+1, state.overall_status, th);
-
-    tb_print_fixed(bx+2, y+2, th->hdr_fg, th->bg, ai_line1, bw-4);
-    tb_print_fixed(bx+2, y+3, th->fg,     th->bg, ai_line2, bw-4);
-    tb_print_fixed(bx+2, y+4, th->fg,     th->bg, ai_line3, bw-4);
-
-    y += ov_h + 1;
-
-    draw_node_panel(bx, y, bw, 5, SYM_LB " Loadbalancer",
-                    state.lb_host, state.lb_ping_status, state.lb_ping,
-                    state.lb_check, state.lb_chk, th);
-    y += 6;
-
-    int half = bw / 2;
-    int half2 = bw - half;
-
-    draw_node_panel(bx, y, half, 5, SYM_NC " Nextcloud 1",
-                    state.nc1_host, state.nc1_ping_status, state.nc1_ping,
-                    state.nc1_check, state.nc1_chk, th);
-    draw_node_panel(bx + half, y, half2, 5, SYM_NC " Nextcloud 2",
-                    state.nc2_host, state.nc2_ping_status, state.nc2_ping,
-                    state.nc2_check, state.nc2_chk, th);
-    y += 6;
-
-    draw_mariadb_panel(bx, y, bw, 8, anim_tick, th);
-    y += 9;
-
-    draw_redis_panel(bx, y, bw, 8, anim_tick, th);
-    y += 9;
-
-    draw_node_panel(bx, y, half, 5, SYM_NFS " NFS",
-                    state.nfs_host, state.nfs_ping_status, state.nfs_ping,
-                    state.nfs_check, state.nfs_chk, th);
-    draw_node_panel(bx + half, y, half2, 5, SYM_DNS " DNS",
-                    state.dns_host, state.dns_ping_status, state.dns_ping,
-                    state.dns_check, state.dns_chk, th);
-    y += 6;
-
-    draw_box(bx, y, bw, 10, th->box1, "History", th);
-
-    tb_print_custom(bx+2, y+1, th->highlight, th->bg, SYM_DB);
-    tb_print_custom(bx+4, y+1, th->fg, th->bg, "MariaDB sync:");
-    draw_status_graph(bx+19, y+1, hist_mysql, hist_idx, bw-21, th);
-
-    tb_print_custom(bx+2, y+2, th->highlight, th->bg, SYM_REDIS);
-    tb_print_custom(bx+4, y+2, th->fg, th->bg, "Redis repl :");
-    draw_status_graph(bx+19, y+2, hist_redis, hist_idx, bw-21, th);
-
-    tb_print_custom(bx+2, y+3, th->highlight, th->bg, SYM_LB);
-    tb_print_custom(bx+4, y+3, th->fg, th->bg, "LB ping    :");
-    draw_ping_graph(bx+19, y+3, hist_lb_ping, hist_idx, bw-21, th);
-
-    tb_print_custom(bx+2, y+4, th->highlight, th->bg, SYM_NC);
-    tb_print_custom(bx+4, y+4, th->fg, th->bg, "NC1 ping   :");
-    draw_ping_graph(bx+19, y+4, hist_nc1_ping, hist_idx, bw-21, th);
-
-    tb_print_custom(bx+2, y+5, th->highlight, th->bg, SYM_NC);
-    tb_print_custom(bx+4, y+5, th->fg, th->bg, "NC2 ping   :");
-    draw_ping_graph(bx+19, y+5, hist_nc2_ping, hist_idx, bw-21, th);
-
-    tb_print_custom(bx+2, y+6, th->highlight, th->bg, SYM_NFS);
-    tb_print_custom(bx+4, y+6, th->fg, th->bg, "NFS ping   :");
-    draw_ping_graph(bx+19, y+6, hist_nfs_ping, hist_idx, bw-21, th);
-
-    tb_print_custom(bx+2, y+7, th->highlight, th->bg, SYM_DNS);
-    tb_print_custom(bx+4, y+7, th->fg, th->bg, "DNS ping   :");
-    draw_ping_graph(bx+19, y+7, hist_dns_ping, hist_idx, bw-21, th);
-
-    snprintf(buf, sizeof(buf), "%s %s", SYM_PULSE, state.message);
-    tb_print_fixed(bx+2, y+8, th->accent, th->bg, buf, bw-4);
-
-    y += 11;
-    tb_hline(bx, y, 0x2508, th->skip, th->bg, bw);
-    tb_print_custom(bx+1,  y+1, th->accent|TB_BOLD, th->bg, "[q Quit]");
-    tb_print_custom(bx+12, y+1, th->accent|TB_BOLD, th->bg, "[t Themes]");
-    tb_print_custom(bx+25, y+1, th->accent|TB_BOLD, th->bg, "[g Graph]");
-    tb_print_custom(bx+37, y+1, th->accent|TB_BOLD, th->bg, "[s Spinner]");
-
-    draw_theme_menu(th);
-    tb_present();
-}
-
-static void print_usage(const char* prog) {
-    printf("Usage: %s [OPTIONS]\n\n"
-           "Options:\n"
-           "  -r, --refresh <seconds>   Refresh interval in seconds (default: 2)\n"
-           "  -f, --file    <path>      Path to state file (default: %s)\n"
-           "  --no-braille              Use classic block graphs\n"
-           "  -h, --help                Show this message\n\n"
-           "Keyboard:\n"
-           "  q / Ctrl+C   Quit\n"
-           "  t            Theme menu\n"
-           "  g            Toggle graph style\n"
-           "  s            Cycle spinner style\n",
-           prog, STATE_FILE_DEFAULT);
-}
-
-int main(int argc, char** argv) {
-    for (int i = 0; i < HIST_SIZE; i++) {
-        hist_mysql[i] = hist_redis[i] = -1;
-        hist_lb_ping[i] = hist_nc1_ping[i] = hist_nc2_ping[i] = hist_nfs_ping[i] = hist_dns_ping[i] = -1;
-    }
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--no-braille") == 0) {
-            config.use_braille = 0;
-        } else if ((strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--refresh") == 0) && i + 1 < argc) {
-            config.display_refresh = atoi(argv[++i]);
-            if (config.display_refresh <= 0) {
-                fprintf(stderr, "ERROR: refresh must be >0\n");
-                return 1;
-            }
-        } else if ((strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--file") == 0) && i + 1 < argc) {
-            strncpy(config.state_file, argv[++i], sizeof(config.state_file)-1);
-            config.state_file[sizeof(config.state_file)-1] = '\0';
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            print_usage(argv[0]);
-            return 0;
-        } else {
-            fprintf(stderr, "ERROR: unknown argument: %s\n", argv[i]);
-            return 1;
-        }
-    }
-
-    tb_init();
-    tb_set_output_mode(TB_OUTPUT_256);
-    tb_set_input_mode(TB_INPUT_ESC);
-
-    signal(SIGINT, handle_sig);
-    signal(SIGTERM, handle_sig);
-
-    struct tb_event ev;
-    uint64_t last_update = 0;
-    int last_tick = -1;
-    int force_redraw = 1;
-
-    load_state();
-    last_update = get_time_ms();
-
-    while (keep_running) {
-        uint64_t now = get_time_ms();
-        int new_tick = (now / 120) % 1000;
-
-        if (now - last_update >= (uint64_t)config.display_refresh * 1000) {
-            load_state();
-            last_update = now;
-            force_redraw = 1;
-        }
-
-        if (new_tick != last_tick || force_redraw) {
-            if (force_redraw) {
-                Theme* th = &themes[current_theme];
-                tb_set_clear_attrs(th->fg, th->bg);
-                tb_clear();
-            }
-            draw_ui(new_tick);
-            last_tick = new_tick;
-            force_redraw = 0;
-        }
-
-        uint64_t next_frame = ((now / 120) + 1) * 120;
-        uint64_t current = get_time_ms();
-        int wait_ms = current >= next_frame ? 1 : (int)(next_frame - current);
-
-        int res = tb_peek_event(&ev, wait_ms);
-        if (res == TB_OK) {
-            if (ev.type == TB_EVENT_RESIZE) {
-                force_redraw = 1;
-            } else if (theme_menu_open) {
-                if (ev.type == TB_EVENT_KEY) {
-                    if      (ev.key == TB_KEY_ARROW_UP)   { theme_menu_sel = (theme_menu_sel - 1 + num_themes) % num_themes; force_redraw = 1; }
-                    else if (ev.key == TB_KEY_ARROW_DOWN) { theme_menu_sel = (theme_menu_sel + 1) % num_themes; force_redraw = 1; }
-                    else if (ev.key == TB_KEY_ENTER)      { current_theme = theme_menu_sel; theme_menu_open = 0; force_redraw = 1; }
-                    else if (ev.key == TB_KEY_ESC || ev.ch == 'q') { theme_menu_open = 0; force_redraw = 1; }
-                }
-            } else {
-                if (ev.type == TB_EVENT_KEY) {
-                    if      (ev.ch == 'q' || ev.key == TB_KEY_CTRL_C) break;
-                    else if (ev.ch == 'g') { config.use_braille = !config.use_braille; force_redraw = 1; }
-                    else if (ev.ch == 't') { theme_menu_sel = current_theme; theme_menu_open = 1; force_redraw = 1; }
-                    else if (ev.ch == 's') { config.spinner_style = (config.spinner_style + 1) % 4; force_redraw = 1; }
-                }
-            }
-        }
-    }
-
-    tb_shutdown();
-    return 0;
-}
+    draw_badge
