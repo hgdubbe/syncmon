@@ -166,11 +166,6 @@ static void now_str(char *buf, size_t sz) {
 
 /* ── ping_host: ICMP ping, fills status ("OK"/"WARN"/"ERROR") + latency ─── */
 void ping_host(const char *host, char *status_out, char *detail_out) {
-    /*
-     * Build the command in two parts to prevent GCC from scanning the
-     * awk printf format string ("%.0fms") as a C format specifier.
-     * The awk snippet is a shell string, not a C printf argument.
-     */
     char cmd[512];
     const char *awk_frag = " | awk '/rtt|round-trip/{split($4,a,\"/\"); printf \"%.0fms\",a[2]}'";
     snprintf(cmd, sizeof(cmd), "ping -c1 -W2 %s 2>/dev/null%s", host, awk_frag);
@@ -193,7 +188,6 @@ void ping_host(const char *host, char *status_out, char *detail_out) {
 /* ── http_check: curl GET, fills "HTTP <code> <first-meaningful-field>" ─── */
 void http_check(const char *url, char *result_out, size_t result_sz) {
     char cmd[768];
-    /* -s silent, -o /dev/null, -w print code; then grab first 120 chars of body */
     snprintf(cmd, sizeof(cmd),
              "CODE=$(curl -sk -o /tmp/syncmon_http_body -w '%%{http_code}' "
              "--max-time 5 '%s' 2>/dev/null); "
@@ -252,6 +246,8 @@ void write_state(const char* state_file,
                  const char* rm_status,   const char* rs_status, const char* r_rep_status,
                  const char* r_detail,    const char* message,
                  const char* mysql_check_ts, const char* redis_check_ts,
+                 /* Redis payload tracing */
+                 const char* redis_sent_payload, const char* redis_recv_payload,
                  /* lb */
                  const char* lb_host,  const char* lb_ping_st, const char* lb_ping,
                  const char* lb_check, const char* lb_chk,
@@ -295,6 +291,9 @@ void write_state(const char* state_file,
     fprintf(f,"REDIS_SLAVE_STATUS=\"%s\"\n",       rs_status      ?rs_status      :"UNKNOWN");
     fprintf(f,"REDIS_REPLICATION_STATUS=\"%s\"\n", r_rep_status   ?r_rep_status   :"UNKNOWN");
     fprintf(f,"REDIS_REPLICATION_DETAIL=\"%s\"\n", r_detail       ?r_detail       :"");
+    /* Redis payload tracing: what master wrote vs what slave echoed back */
+    fprintf(f,"REDIS_SENT_PAYLOAD=\"%s\"\n",       redis_sent_payload ?redis_sent_payload :"");
+    fprintf(f,"REDIS_RECV_PAYLOAD=\"%s\"\n",       redis_recv_payload ?redis_recv_payload :"");
     fprintf(f,"REDIS_CHECK_TIMESTAMP=\"%s\"\n",    redis_check_ts ?redis_check_ts :"unknown");
     /* LB */
     fprintf(f,"LB_HOST=\"%s\"\n",              lb_host    ?lb_host    :"");
@@ -355,6 +354,9 @@ void get_mysql_gtid(const char* host,const char* port,const char* user,
     }
 }
 
+/* ── Global Redis payload counter (persists across check cycles) ─────── */
+static unsigned long long g_redis_seq = 0;
+
 void run_checks(Config *cfg) {
     char mysql_master_status[16]="UNKNOWN", mysql_slave_status[16]="UNKNOWN",
          mysql_sync_status[16]="UNKNOWN";
@@ -363,6 +365,8 @@ void run_checks(Config *cfg) {
          redis_rep_status[16]="UNKNOWN";
     char redis_rep_detail[256]="unknown", overall_msg[256]="";
     char mysql_check_ts[64]="unknown", redis_check_ts[64]="unknown";
+    /* Redis payload tracing */
+    char redis_sent_payload[128]="", redis_recv_payload[128]="";
 
     /* ── MariaDB ────────────────────────────────────────────────────────────────── */
     if (cfg->enable_mysql_check) {
@@ -399,23 +403,42 @@ void run_checks(Config *cfg) {
     if (cfg->enable_redis_check) {
         char cmd[MAX_BUFFER], out[MAX_BUFFER];
         const char *pass=cfg->redis_password;
+        char auth_args[128]="";
+        if (strlen(pass)>0) snprintf(auth_args,sizeof(auth_args),"-a %s",pass);
+
+        /* Build payload: upcounting sequence number + current timestamp */
+        char ts_now[64]; now_str(ts_now, sizeof(ts_now));
+        g_redis_seq++;
+        snprintf(redis_sent_payload, sizeof(redis_sent_payload),
+                 "seq=%llu ts=%s", g_redis_seq, ts_now);
+
+        /* Write payload to master */
         snprintf(cmd,sizeof(cmd),
-                 "redis-cli --no-auth-warning -h %s -p %s %s %s PING 2>/dev/null",
-                 cfg->redis_master_host,cfg->redis_master_port,
-                 strlen(pass)?"-a":"",strlen(pass)?pass:"");
-        int r_master_ok=exec_query(cmd,out,sizeof(out));
+                 "redis-cli --no-auth-warning -h %s -p %s %s SET syncmon:probe \"%s\" EX 120 2>/dev/null",
+                 cfg->redis_master_host, cfg->redis_master_port,
+                 auth_args, redis_sent_payload);
+        int r_master_ok = (system(cmd) == 0);
+        strcpy(redis_master_status, r_master_ok ? "OK" : "ERROR");
+
+        /* Read payload back from slave (confirms replication round-trip) */
         snprintf(cmd,sizeof(cmd),
-                 "redis-cli --no-auth-warning -h %s -p %s %s %s PING 2>/dev/null",
-                 cfg->redis_slave_host,cfg->redis_slave_port,
-                 strlen(pass)?"-a":"",strlen(pass)?pass:"");
-        int r_slave_ok=exec_query(cmd,out,sizeof(out));
-        strcpy(redis_master_status,r_master_ok?"OK":"ERROR");
-        strcpy(redis_slave_status, r_slave_ok ?"OK":"ERROR");
+                 "redis-cli --no-auth-warning -h %s -p %s %s GET syncmon:probe 2>/dev/null",
+                 cfg->redis_slave_host, cfg->redis_slave_port,
+                 auth_args);
+        int r_slave_ok = exec_query(cmd, out, sizeof(out));
+        strcpy(redis_slave_status, r_slave_ok ? "OK" : "ERROR");
+
+        if (r_slave_ok && strlen(out) > 0) {
+            snprintf(redis_recv_payload, sizeof(redis_recv_payload), "%s", out);
+        } else {
+            snprintf(redis_recv_payload, sizeof(redis_recv_payload), "(no data)");
+        }
+
         if (r_slave_ok) {
+            /* Also check INFO replication for link status */
             snprintf(cmd,sizeof(cmd),
-                     "redis-cli --no-auth-warning -h %s -p %s %s %s INFO replication 2>/dev/null",
-                     cfg->redis_slave_host,cfg->redis_slave_port,
-                     strlen(pass)?"-a":"",strlen(pass)?pass:"");
+                     "redis-cli --no-auth-warning -h %s -p %s %s INFO replication 2>/dev/null",
+                     cfg->redis_slave_host,cfg->redis_slave_port, auth_args);
             FILE* fp=popen(cmd,"r");
             if (fp) {
                 char line[256],link[16]="?",io[16]="?",host[64]="?";
@@ -427,10 +450,17 @@ void run_checks(Config *cfg) {
                     else if (strncmp(line,"master_host:",12)==0)               sscanf(line+12,"%s",host);
                 }
                 pclose(fp);
-                snprintf(redis_rep_detail,sizeof(redis_rep_detail),"link=%s io=%s host=%s",link,io,host);
-                strcpy(redis_rep_status,rep_ok?"OK":"WARN");
+                /* Verify payload echo matches what we sent */
+                int payload_ok = (strcmp(redis_sent_payload, redis_recv_payload)==0);
+                snprintf(redis_rep_detail,sizeof(redis_rep_detail),
+                         "link=%s io=%s host=%s payload=%s",
+                         link, io, host, payload_ok ? "match" : "mismatch");
+                strcpy(redis_rep_status, (rep_ok && payload_ok) ? "OK" : "WARN");
             }
-        } else strcpy(redis_rep_status,"ERROR");
+        } else {
+            strcpy(redis_rep_status,"ERROR");
+            snprintf(redis_rep_detail,sizeof(redis_rep_detail),"slave unreachable");
+        }
         now_str(redis_check_ts, sizeof(redis_check_ts));
     }
 
@@ -505,6 +535,7 @@ void run_checks(Config *cfg) {
                 redis_master_status, redis_slave_status, redis_rep_status,
                 redis_rep_detail,    overall_msg,
                 mysql_check_ts,      redis_check_ts,
+                redis_sent_payload,  redis_recv_payload,
                 cfg->lb_host,  lb_ping_st,  lb_ping,  lb_check_res,  lb_chk,
                 cfg->dns_host, dns_ping_st, dns_ping, dns_check_res, dns_chk,
                 cfg->nc1_host, nc1_ping_st, nc1_ping, nc1_check_res, nc1_chk,
@@ -512,70 +543,328 @@ void run_checks(Config *cfg) {
                 cfg->nfs_host, nfs_ping_st, nfs_ping, nfs_check_res, nfs_chk);
 
     char log_buf[512];
-    snprintf(log_buf,sizeof(log_buf),"check complete: %s",overall);
+    snprintf(log_buf,sizeof(log_buf),"check complete: %s (redis probe seq=%llu)",
+             overall, g_redis_seq);
     log_message(cfg,log_buf);
 }
 
-void run_test_mode(const char* state_file) {
-    srand(time(NULL));
-    const char* statuses[]={"OK","WARN","ERROR"};
-    const char* base_gtid=(rand()%2)
-        ?"3E111111-1111-1111-1111-111111111111"
-        :"4F222222-2222-2222-2222-222222222222";
-    int mg=(rand()%10000)+1000, sg=mg;
-    if ((rand()%100)<30) sg-=(rand()%50+1);
-    char m_gtid_str[256],s_gtid_str[256],r_detail[256],ts[64];
-    snprintf(m_gtid_str,sizeof(m_gtid_str),"%s:%d",base_gtid,mg);
-    snprintf(s_gtid_str,sizeof(s_gtid_str),"%s:%d",base_gtid,sg);
-    const char* rep_status=statuses[rand()%3];
-    snprintf(r_detail,sizeof(r_detail),"link=%s io=%d host=172.31.%d.%d",
-             strcmp(rep_status,"ERROR")==0?"down":"up",rand()%15,rand()%255,rand()%255);
-    now_str(ts, sizeof(ts));
+/* ══════════════════════════════════════════════════════════════════════════════
+ * Realistic simulation state machine
+ *
+ * The system starts fully healthy. Every ~30 s tick it advances through a
+ * scenario list that mimics what a real cluster experiences over time:
+ *   - Long stretches of normal operation (OK everywhere)
+ *   - Brief transient latency spikes (WARN) on individual components
+ *   - Short replication lag periods (slave gtid behind master by a few txns)
+ *   - Occasional single-component errors (~30 s, one or two ticks)
+ *   - Recovery back to OK
+ *
+ * Key causality rules that are enforced:
+ *   - If redis_master is ERROR  → redis_rep is ERROR, slave read is stale/none
+ *   - If redis_slave  is ERROR  → redis_rep is ERROR
+ *   - If mysql_master is ERROR  → mysql_sync is ERROR, slave gtid may drift
+ *   - mysql_sync WARN only when both nodes are reachable but gtids differ
+ *   - ping WARN/ERROR on a host cascades to its service status logically
+ * ══════════════════════════════════════════════════════════════════════════════ */
 
-    /* mock ping helper */
-    const char* ping_labels[]={"3ms","12ms","251ms","timeout"};
-    const char* ping_st[]    ={"OK", "OK",  "WARN", "ERROR"};
-#define RPICK(arr) arr[rand()%4]
+typedef struct {
+    /* description logged */
+    const char *scenario_name;
+    /* MySQL */
+    int mysql_master_ok;    /* 1=OK, 0=ERROR */
+    int mysql_slave_ok;
+    int mysql_gtid_lag;     /* slave is N transactions behind master */
+    /* Redis */
+    int redis_master_ok;
+    int redis_slave_ok;
+    int redis_link_up;      /* 0 = link down even if both respond to PING */
+    int redis_io_sec;       /* master_last_io_seconds_ago */
+    int redis_payload_match;/* 1 = sent==recv, 0 = stale/mismatch */
+    /* LB */
+    int lb_ping_ms;         /* -1 = timeout */
+    int lb_http_code;       /* 0 = curl error */
+    int lb_backends;        /* e.g. 3/3, 2/3 */
+    /* DNS */
+    int dns_ping_ms;
+    int dns_resolv_ok;
+    /* NC1 */
+    int nc1_ping_ms;
+    int nc1_http_code;
+    int nc1_maintenance;
+    /* NC2 */
+    int nc2_ping_ms;
+    int nc2_http_code;
+    int nc2_maintenance;
+    /* NFS */
+    int nfs_ping_ms;
+    int nfs_export_ok;
+    /* How many simulation ticks to hold this scenario */
+    int ticks;
+} SimScenario;
+
+static const SimScenario SIM_SCENARIOS[] = {
+    /* name,               mm  ms  lag  rm  rs  lnk  io  pm   lb_ms lb_c lb_b  dn_ms dn_r  n1ms n1c n1m  n2ms n2c n2m  nfs_ms nfs_e  ticks */
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   1,  1,    2, 200,  3,    2,  1,    2, 200,  0,   2, 200,  0,   2,    1,    10},
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   1,  1,    3, 200,  3,    3,  1,    3, 200,  0,   3, 200,  0,   3,    1,     8},
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   2,  1,    4, 200,  3,    2,  1,    4, 200,  0,   4, 200,  0,   4,    1,     6},
+    {"LB latency spike",    1,  1,  0,  1,  1,  1,   1,  1,  280, 200,  3,    3,  1,    3, 200,  0,   3, 200,  0,   3,    1,     2},
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   1,  1,    5, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   3,    1,     5},
+    {"Redis slave io lag",  1,  1,  0,  1,  1,  1,  12,  1,    4, 200,  3,    2,  1,    3, 200,  0,   3, 200,  0,   3,    1,     2},
+    {"Redis io lag higher", 1,  1,  0,  1,  1,  1,  28,  1,    4, 200,  3,    2,  1,    3, 200,  0,   3, 200,  0,   3,    1,     1},
+    {"Redis link down",     1,  1,  0,  1,  1,  0,  -1,  0,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     1},
+    {"Redis link recover",  1,  1,  0,  1,  1,  1,   3,  1,    3, 200,  3,    3,  1,    3, 200,  0,   3, 200,  0,   3,    1,     2},
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   1,  1,    3, 200,  3,    2,  1,    3, 200,  0,   3, 200,  0,   3,    1,     8},
+    {"MySQL gtid lag",      1,  1,  3,  1,  1,  1,   1,  1,    3, 200,  3,    2,  1,    3, 200,  0,   3, 200,  0,   3,    1,     2},
+    {"MySQL gtid lag",      1,  1,  1,  1,  1,  1,   1,  1,    3, 200,  3,    2,  1,    3, 200,  0,   3, 200,  0,   3,    1,     1},
+    {"MySQL gtid synced",   1,  1,  0,  1,  1,  1,   1,  1,    3, 200,  3,    2,  1,    3, 200,  0,   3, 200,  0,   3,    1,     3},
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   1,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     6},
+    {"NC2 maintenance",     1,  1,  0,  1,  1,  1,   2,  1,    3, 200,  3,    2,  1,    3, 200,  0,   3, 200,  1,   3,    1,     2},
+    {"NC2 back online",     1,  1,  0,  1,  1,  1,   1,  1,    3, 200,  3,    2,  1,    3, 200,  0,   3, 200,  0,   3,    1,     3},
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   1,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     8},
+    {"NFS latency spike",   1,  1,  0,  1,  1,  1,   1,  1,    3, 200,  3,    3,  1,    3, 200,  0,   3, 200,  0, 340,    1,     1},
+    {"NFS unreachable",     1,  1,  0,  1,  1,  1,   1,  1,    3, 200,  3,    3,  1,    3, 200,  0,   3, 200,  0,  -1,    0,     1},
+    {"NFS recover",         1,  1,  0,  1,  1,  1,   1,  1,    3, 200,  3,    3,  1,    3, 200,  0,   3, 200,  0,   5,    1,     2},
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   1,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     8},
+    {"Redis slave down",    1,  1,  0,  1,  0,  0,  -1,  0,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     1},
+    {"Redis slave recover", 1,  1,  0,  1,  1,  1,   5,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     2},
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   1,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     6},
+    {"MySQL slave down",    1,  0,  0,  1,  1,  1,   1,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     1},
+    {"MySQL slave recover", 1,  1,  5,  1,  1,  1,   1,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     1},
+    {"MySQL gtid catchup",  1,  1,  2,  1,  1,  1,   1,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     1},
+    {"MySQL synced again",  1,  1,  0,  1,  1,  1,   1,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     5},
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   1,  1,    3, 200,  3,    2,  1,    3, 200,  0,   3, 200,  0,   3,    1,     6},
+    {"LB one backend down", 1,  1,  0,  1,  1,  1,   2,  1,    5, 200,  2,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     2},
+    {"LB recovered",        1,  1,  0,  1,  1,  1,   1,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,     4},
+    {"Healthy baseline",    1,  1,  0,  1,  1,  1,   1,  1,    4, 200,  3,    3,  1,    4, 200,  0,   4, 200,  0,   4,    1,    10},
+};
+#define SIM_SCENARIO_COUNT ((int)(sizeof(SIM_SCENARIOS)/sizeof(SIM_SCENARIOS[0])))
+
+void run_test_mode(const char* state_file) {
+    static int sim_scenario_idx  = -1;  /* current scenario index */
+    static int sim_tick_in_scenario = 0;
+
+    /* On first call, load persistent state from a tiny side-file */
+    char sim_state_path[PATH_MAX+16];
+    snprintf(sim_state_path, sizeof(sim_state_path), "%s.simstate", state_file);
+
+    if (sim_scenario_idx < 0) {
+        FILE *sf = fopen(sim_state_path, "r");
+        if (sf) {
+            int idx=0, tick=0;
+            unsigned long long seq=0;
+            if (fscanf(sf, "%d %d %llu", &idx, &tick, &seq) == 3) {
+                sim_scenario_idx    = idx  % SIM_SCENARIO_COUNT;
+                sim_tick_in_scenario = tick;
+                g_redis_seq          = seq;
+            }
+            fclose(sf);
+        } else {
+            sim_scenario_idx    = 0;
+            sim_tick_in_scenario = 0;
+            g_redis_seq          = 0;
+        }
+    }
+
+    /* Advance to next scenario if ticks exhausted */
+    const SimScenario *sc = &SIM_SCENARIOS[sim_scenario_idx];
+    if (sim_tick_in_scenario >= sc->ticks) {
+        sim_scenario_idx = (sim_scenario_idx + 1) % SIM_SCENARIO_COUNT;
+        sim_tick_in_scenario = 0;
+        sc = &SIM_SCENARIOS[sim_scenario_idx];
+    }
+    sim_tick_in_scenario++;
+
+    /* Bump redis probe sequence */
+    g_redis_seq++;
+
+    /* ── Build timestamp ─────────────────────────────────────────────── */
+    char ts[64]; now_str(ts, sizeof(ts));
+
+    /* ── Build Redis sent payload ─────────────────────────────────────── */
+    char redis_sent[128], redis_recv[128];
+    snprintf(redis_sent, sizeof(redis_sent), "seq=%llu ts=%s", g_redis_seq, ts);
+    if (sc->redis_payload_match && sc->redis_slave_ok && sc->redis_link_up) {
+        snprintf(redis_recv, sizeof(redis_recv), "%s", redis_sent);
+    } else if (sc->redis_slave_ok && !sc->redis_link_up) {
+        /* slave responds but holds stale data from last good replication */
+        snprintf(redis_recv, sizeof(redis_recv), "seq=%llu ts=(stale)",
+                 g_redis_seq > 1 ? g_redis_seq - 1 : g_redis_seq);
+    } else {
+        snprintf(redis_recv, sizeof(redis_recv), "(no data)");
+    }
+
+    /* ── MySQL GTID ───────────────────────────────────────────────────── */
+    unsigned long long base_txn = 10000 + g_redis_seq * 3;
+    char m_gtid[256], s_gtid[256];
+    snprintf(m_gtid, sizeof(m_gtid), "3E11-1111-1111-1111-1111:%llu", base_txn);
+    snprintf(s_gtid, sizeof(s_gtid), "3E11-1111-1111-1111-1111:%llu",
+             sc->mysql_slave_ok ? (base_txn - (unsigned long long)sc->mysql_gtid_lag)
+                                : (base_txn - 10ULL));
+
+    /* ── Derive statuses ──────────────────────────────────────────────── */
+    const char *mysql_master_st = sc->mysql_master_ok ? "OK" : "ERROR";
+    const char *mysql_slave_st  = sc->mysql_slave_ok  ? "OK" : "ERROR";
+    const char *mysql_sync_st;
+    if (!sc->mysql_master_ok || !sc->mysql_slave_ok)
+        mysql_sync_st = "ERROR";
+    else if (sc->mysql_gtid_lag > 0)
+        mysql_sync_st = "WARN";
+    else
+        mysql_sync_st = "OK";
+
+    const char *redis_master_st = sc->redis_master_ok ? "OK" : "ERROR";
+    const char *redis_slave_st  = sc->redis_slave_ok  ? "OK" : "ERROR";
+    const char *redis_rep_st;
+    char redis_detail[256];
+    if (!sc->redis_master_ok || !sc->redis_slave_ok) {
+        redis_rep_st = "ERROR";
+        snprintf(redis_detail, sizeof(redis_detail),
+                 "link=down io=N/A host=172.31.40.234");
+    } else if (!sc->redis_link_up) {
+        redis_rep_st = "WARN";
+        snprintf(redis_detail, sizeof(redis_detail),
+                 "link=down io=N/A host=172.31.40.234");
+    } else if (sc->redis_io_sec > 20) {
+        redis_rep_st = "WARN";
+        snprintf(redis_detail, sizeof(redis_detail),
+                 "link=up io=%d host=172.31.40.234 payload=match", sc->redis_io_sec);
+    } else {
+        int pmatch = sc->redis_payload_match;
+        redis_rep_st = pmatch ? "OK" : "WARN";
+        snprintf(redis_detail, sizeof(redis_detail),
+                 "link=up io=%d host=172.31.40.234 payload=%s",
+                 sc->redis_io_sec, pmatch ? "match" : "mismatch");
+    }
+
+    /* ── Ping helpers ─────────────────────────────────────────────────── */
+#define PING_ST(ms)  ((ms)<0?"ERROR":(ms)<100?"OK":(ms)<500?"WARN":"ERROR")
+#define PING_STR(ms) ((ms)<0?"timeout":"")
+
+    char lb_ping_str[16], dns_ping_str[16], nc1_ping_str[16],
+         nc2_ping_str[16], nfs_ping_str[16];
+    if (sc->lb_ping_ms  >= 0) snprintf(lb_ping_str,  sizeof(lb_ping_str),  "%dms", sc->lb_ping_ms);
+    else strcpy(lb_ping_str,  "timeout");
+    if (sc->dns_ping_ms >= 0) snprintf(dns_ping_str, sizeof(dns_ping_str), "%dms", sc->dns_ping_ms);
+    else strcpy(dns_ping_str, "timeout");
+    if (sc->nc1_ping_ms >= 0) snprintf(nc1_ping_str, sizeof(nc1_ping_str), "%dms", sc->nc1_ping_ms);
+    else strcpy(nc1_ping_str, "timeout");
+    if (sc->nc2_ping_ms >= 0) snprintf(nc2_ping_str, sizeof(nc2_ping_str), "%dms", sc->nc2_ping_ms);
+    else strcpy(nc2_ping_str, "timeout");
+    if (sc->nfs_ping_ms >= 0) snprintf(nfs_ping_str, sizeof(nfs_ping_str), "%dms", sc->nfs_ping_ms);
+    else strcpy(nfs_ping_str, "timeout");
+
+    /* ── Service check strings ────────────────────────────────────────── */
+    char lb_check[128], nc1_check[128], nc2_check[128], nfs_check[128], dns_check[128];
+
+    /* LB: degrade http if ping failed */
+    if (sc->lb_ping_ms < 0 || sc->lb_http_code == 0)
+        snprintf(lb_check, sizeof(lb_check), "curl error / unreachable");
+    else
+        snprintf(lb_check, sizeof(lb_check), "HTTP %d HAProxy active, backend %d/3 up",
+                 sc->lb_http_code, sc->lb_backends);
+
+    /* NC1 */
+    if (sc->nc1_ping_ms < 0 || sc->nc1_http_code == 0)
+        snprintf(nc1_check, sizeof(nc1_check), "curl error / unreachable");
+    else
+        snprintf(nc1_check, sizeof(nc1_check), "HTTP %d /status.php maintenance=%s",
+                 sc->nc1_http_code, sc->nc1_maintenance ? "true" : "false");
+
+    /* NC2 */
+    if (sc->nc2_ping_ms < 0 || sc->nc2_http_code == 0)
+        snprintf(nc2_check, sizeof(nc2_check), "curl error / unreachable");
+    else
+        snprintf(nc2_check, sizeof(nc2_check), "HTTP %d /status.php maintenance=%s",
+                 sc->nc2_http_code, sc->nc2_maintenance ? "true" : "false");
+
+    /* NFS */
+    if (sc->nfs_ping_ms < 0 || !sc->nfs_export_ok)
+        snprintf(nfs_check, sizeof(nfs_check), "ERROR no exports / unreachable");
+    else
+        snprintf(nfs_check, sizeof(nfs_check), "exports: /data/shared 172.31.0.0/24(ro,sync)");
+
+    /* DNS */
+    if (sc->dns_ping_ms < 0 || !sc->dns_resolv_ok)
+        snprintf(dns_check, sizeof(dns_check), "ERROR query timeout / NXDOMAIN");
+    else
+        snprintf(dns_check, sizeof(dns_check), "resolv OK: 172.31.0.1");
+
+    /* ── Overall ──────────────────────────────────────────────────────── */
+    const char *overall;
+    const char *msg;
+    if (strcmp(mysql_master_st,"OK")==0 && strcmp(mysql_slave_st,"OK")==0 &&
+        strcmp(mysql_sync_st,  "OK")==0 &&
+        strcmp(redis_master_st,"OK")==0 && strcmp(redis_slave_st, "OK")==0 &&
+        strcmp(redis_rep_st,   "OK")==0) {
+        overall = "OK";  msg = "All systems operational";
+    } else if (strcmp(mysql_master_st,"ERROR")==0 && strcmp(redis_master_st,"ERROR")==0) {
+        overall = "ERROR"; msg = "Multiple master failures detected";
+    } else {
+        overall = "WARN";  msg = sc->scenario_name;
+    }
 
     write_state(state_file,
                 "172.31.49.233","3306","172.31.40.234","3306",
                 "172.31.40.234","6379","172.31.40.233","6379",
-                statuses[rand()%3],
-                statuses[rand()%3],statuses[rand()%3],
-                mg==sg?"OK":"WARN",
-                m_gtid_str,s_gtid_str,
-                statuses[rand()%3],statuses[rand()%3],
-                rep_status,r_detail,"Live Simulation Data",
-                ts,ts,
-                /* lb  */ "172.31.0.10",  RPICK(ping_st), RPICK(ping_labels),
-                          "HAProxy active, backend 3/3 up", ts,
-                /* dns */ "172.31.0.53",  RPICK(ping_st), RPICK(ping_labels),
-                          "resolv OK: 172.31.0.1", ts,
-                /* nc1 */ "172.31.1.11",  RPICK(ping_st), RPICK(ping_labels),
-                          "HTTP 200 /status.php maintenance=false", ts,
-                /* nc2 */ "172.31.1.12",  RPICK(ping_st), RPICK(ping_labels),
-                          "HTTP 200 /status.php maintenance=false", ts,
-                /* nfs */ "172.31.2.20",  RPICK(ping_st), RPICK(ping_labels),
-                          "exports: /data/shared 172.31.0.0/24(ro,sync)", ts);
-#undef RPICK
-    printf("Simulated test state written to %s\n", state_file);
-    exit(0);
+                overall,
+                mysql_master_st, mysql_slave_st, mysql_sync_st,
+                m_gtid, s_gtid,
+                redis_master_st, redis_slave_st, redis_rep_st,
+                redis_detail, msg,
+                ts, ts,
+                redis_sent, redis_recv,
+                /* lb  */ "172.31.0.10",  PING_ST(sc->lb_ping_ms),  lb_ping_str,  lb_check,  ts,
+                /* dns */ "172.31.0.53",  PING_ST(sc->dns_ping_ms), dns_ping_str, dns_check, ts,
+                /* nc1 */ "172.31.1.11",  PING_ST(sc->nc1_ping_ms), nc1_ping_str, nc1_check, ts,
+                /* nc2 */ "172.31.1.12",  PING_ST(sc->nc2_ping_ms), nc2_ping_str, nc2_check, ts,
+                /* nfs */ "172.31.2.20",  PING_ST(sc->nfs_ping_ms), nfs_ping_str, nfs_check, ts);
+#undef PING_ST
+#undef PING_STR
+
+    /* Persist simulation state for next tick */
+    FILE *sf = fopen(sim_state_path, "w");
+    if (sf) {
+        fprintf(sf, "%d %d %llu\n", sim_scenario_idx, sim_tick_in_scenario, g_redis_seq);
+        fclose(sf);
+    }
+
+    printf("[sim tick %d/%d] scenario=%d \"%s\" redis_seq=%llu overall=%s\n",
+           sim_tick_in_scenario, sc->ticks,
+           sim_scenario_idx, sc->scenario_name,
+           g_redis_seq, overall);
 }
 
 int main(int argc, char *argv[]) {
     Config cfg; init_config(&cfg);
+    int test_mode = 0;
     for (int i=1;i<argc;i++) {
-        if      (strcmp(argv[i],"--test")==0)  run_test_mode(cfg.state_file);
+        if      (strcmp(argv[i],"--test")==0)  test_mode = 1;
         else if (strcmp(argv[i],"--help")==0||strcmp(argv[i],"-h")==0) {
             printf("Usage: syncmon-daemon [--test] [--help]\n\n"
-                   "  --test    Write a sample syncmon state file and exit\n"
+                   "  --test    Run as realistic simulation (writes state each interval, loops)\n"
                    "  --help    Show this usage message\n\n"
                    "Config  : %s\nLog     : %s\nState   : %s\n",
                    CONFIG_FILE_DEFAULT,LOG_FILE_DEFAULT,STATE_FILE_DEFAULT);
             return 0;
         } else { fprintf(stderr,"ERROR: unknown argument: %s\n",argv[i]); return 1; }
     }
+
     ensure_log_dir(cfg.log_file); ensure_log_dir(cfg.state_file);
+
+    if (test_mode) {
+        /* Load config if available (non-fatal) */
+        FILE *tcf = fopen(CONFIG_FILE_DEFAULT, "r");
+        if (tcf) { fclose(tcf); load_config(CONFIG_FILE_DEFAULT, &cfg); }
+        printf("SyncMon simulation running (interval=%ds, state=%s)\n"
+               "Press Ctrl-C to stop.\n",
+               cfg.check_interval, cfg.state_file);
+        while (1) {
+            run_test_mode(cfg.state_file);
+            sleep(cfg.check_interval);
+        }
+        return 0;
+    }
+
     load_config(CONFIG_FILE_DEFAULT,&cfg);
     ensure_log_dir(cfg.log_file); ensure_log_dir(cfg.state_file);
     if (cfg.startup_check) { log_message(&cfg,"Performing initial startup checks..."); run_checks(&cfg); }
