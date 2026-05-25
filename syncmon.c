@@ -105,8 +105,8 @@ struct {
     char r_s_status[MAX_VAL];
     char r_sync[MAX_VAL];
     char r_det[MAX_VAL];
-    char r_sent[MAX_VAL];   /* REDIS_SENT_PAYLOAD */
-    char r_recv[MAX_VAL];   /* REDIS_RECV_PAYLOAD */
+    char r_sent[MAX_VAL];
+    char r_recv[MAX_VAL];
     char r_chk[MAX_VAL];
     char r_m_ep[MAX_VAL];
     char r_s_ep[MAX_VAL];
@@ -553,18 +553,6 @@ void draw_status_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
     }
 }
 
-/*
- * draw_ping_graph  –  same visual language as draw_status_graph.
- *
- * Mapping:   timeout / parse error  →  full block in err colour  (was ASCII 'X')
- *            0 – 30 ms              →  ok colour,  height 4  (full)
- *            31 – 100 ms            →  warn colour, height 2  (mid)
- *            > 100 ms               →  err colour,  height 1  (low)
- *
- * When use_braille is on, heights are encoded with braille_bar() so the
- * texture matches the sync graphs exactly.
- * When use_braille is off, classic block heights are used (▄ / ▆ / █).
- */
 void draw_ping_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
     for (int c = 0; c < mw; c++) {
         int idx = head - 1 - (mw - 1 - c);
@@ -572,23 +560,18 @@ void draw_ping_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
         idx %= HIST_SIZE;
         int v = hd[idx];
 
-        /* No data yet */
         if (v == -1) {
             tb_set_cell(x+c, y, 0x2508, th->skip, th->bg);
             continue;
         }
-        /* Timeout / unreachable: same as ERROR in status graph */
         if (v < 0) {
             tb_set_cell(x+c, y, 0x2588, th->err|TB_BOLD, th->bg);
             continue;
         }
 
-        /* Map latency to a 0-4 height and colour, mirroring status_to_val logic */
         int h;
         uint16_t col;
         if (v == 0) {
-            /* 0 ms is suspicious (parse failure treated as no data above,
-               but guard anyway) */
             h = 1; col = th->warn;
         } else if (v <= 30) {
             h = 4; col = th->ok;
@@ -601,7 +584,6 @@ void draw_ping_graph(int x, int y, int* hd, int head, int mw, Theme* th) {
         if (config.use_braille) {
             tb_set_cell(x+c, y, braille_bar(h, h), col, th->bg);
         } else {
-            /* classic block heights: 1→▂  2→▄  3→▆  4→█ */
             static const uint32_t blocks[] = {0x2582, 0x2584, 0x2586, 0x2588};
             tb_set_cell(x+c, y, blocks[h-1], col, th->bg);
         }
@@ -708,88 +690,113 @@ void draw_status_line_lr_flush(int x, int y, int w,
     tb_print_custom(right_x + 12, y, th->accent, th->bg, right_label);
 }
 
-void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h, int box_x, int box_w, 
-                               int dir, const char* master_status, const char* sync_status, const char* slave_status, 
+/*
+ * draw_continuous_sync_path
+ *
+ * FIX: The animated dot (◆) was not appearing on the vertical segment
+ * leading up to the slave panel.  The old guard suppressed the dot
+ * whenever dot_y != rail_y AND the dot was NOT outside the sync-info box
+ * horizontally – but that logic was wrong for the vertical legs.
+ *
+ * The correct rule is simply: don't draw the dot when it would land
+ * *inside* the sync-info box (any row, any column of the box rectangle).
+ * Everywhere else – including both vertical segments – it must be drawn.
+ */
+void draw_continuous_sync_path(int x1, int x2, int hook_y, int box_y, int box_h, int box_x, int box_w,
+                               int dir, const char* master_status, const char* sync_status, const char* slave_status,
                                Theme* th, int tick)
 {
     uint16_t col = get_status_fg(sync_status, th);
     if (x2 <= x1) return;
-    
+
     int rail_y = box_y + box_h / 2;
 
-    /* Draw static path (horizontal line passing behind the box) */
+    /* Static horizontal rail (skip cells covered by the sync-info box) */
     for (int x = x1; x <= x2; x++) {
         if (x < box_x || x >= box_x + box_w) {
-            tb_set_cell(x, rail_y, 0x2500, th->skip, th->bg); /* ─ */
+            tb_set_cell(x, rail_y, 0x2500, th->skip, th->bg);
         }
     }
-    
-    /* Draw left and right vertical drops */
-    for(int y = hook_y; y < rail_y; y++) {
-        tb_set_cell(x1, y, 0x2502, th->skip, th->bg); /* │ */
-        tb_set_cell(x2, y, 0x2502, th->skip, th->bg); /* │ */
-    }
-    
-    tb_set_cell(x1, rail_y, 0x2514, th->skip, th->bg); /* └ */
-    tb_set_cell(x2, rail_y, 0x2518, th->skip, th->bg); /* ┘ */
 
-    /* Animation logic */
-    if (strcmp(master_status, "ERROR") == 0) {
-        return;
+    /* Vertical drops from hook_y down to rail_y on both sides */
+    for (int y = hook_y; y < rail_y; y++) {
+        tb_set_cell(x1, y, 0x2502, th->skip, th->bg);
+        tb_set_cell(x2, y, 0x2502, th->skip, th->bg);
     }
 
-    int vert_len_left = rail_y - hook_y;
-    int vert_len_right = rail_y - hook_y;
+    /* Corner joints */
+    tb_set_cell(x1, rail_y, 0x2514, th->skip, th->bg);
+    tb_set_cell(x2, rail_y, 0x2518, th->skip, th->bg);
+
+    /* No animation when master is completely down */
+    if (strcmp(master_status, "ERROR") == 0) return;
+
+    int vert_len = rail_y - hook_y;   /* same on both sides */
     int horiz_len = x2 - x1;
-    int total_len = vert_len_left + horiz_len + vert_len_right;
-    
+    int total_len = vert_len + horiz_len + vert_len;
+
     int pos = tick % total_len;
     int dot_x = -1, dot_y = -1;
 
-    if (dir > 0) { /* Left to Right (MariaDB) */
+    if (dir > 0) {
+        /* MariaDB: master (left) → slave (right) */
         if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
-            tb_set_cell(x2, hook_y, 0x25B2, col | TB_BOLD, th->bg); /* ▲ */
+            tb_set_cell(x2, hook_y, 0x25B2, col | TB_BOLD, th->bg);
         }
 
-        if (pos <= vert_len_left) {
+        if (pos < vert_len) {
+            /* Phase 1: descend from left hook_y down to rail_y */
             dot_x = x1;
             dot_y = hook_y + pos;
-        } else if (pos <= vert_len_left + horiz_len) {
-            dot_x = x1 + (pos - vert_len_left);
+        } else if (pos < vert_len + horiz_len) {
+            /* Phase 2: travel right along rail */
+            dot_x = x1 + (pos - vert_len);
             dot_y = rail_y;
         } else {
+            /* Phase 3: ascend from rail_y up to right hook_y */
             dot_x = x2;
-            dot_y = rail_y - (pos - vert_len_left - horiz_len);
+            dot_y = rail_y - (pos - vert_len - horiz_len);
         }
-        
-        if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) && dot_x > box_x + box_w/2) {
+
+        /* Suppress dot on the slave-side if sync/slave is in error */
+        if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0)
+                && dot_x > box_x + box_w / 2) {
             dot_x = -1;
         }
-        
-    } else { /* Right to Left (Redis) */
+
+    } else {
+        /* Redis: master (right) → slave (left) */
         if (strcmp(sync_status, "ERROR") != 0 && strcmp(slave_status, "ERROR") != 0) {
-            tb_set_cell(x1, hook_y, 0x25B2, col | TB_BOLD, th->bg); /* ▲ */
+            tb_set_cell(x1, hook_y, 0x25B2, col | TB_BOLD, th->bg);
         }
 
-        if (pos <= vert_len_right) {
+        if (pos < vert_len) {
+            /* Phase 1: descend from right hook_y down to rail_y */
             dot_x = x2;
             dot_y = hook_y + pos;
-        } else if (pos <= vert_len_right + horiz_len) {
-            dot_x = x2 - (pos - vert_len_right);
+        } else if (pos < vert_len + horiz_len) {
+            /* Phase 2: travel left along rail */
+            dot_x = x2 - (pos - vert_len);
             dot_y = rail_y;
         } else {
+            /* Phase 3: ascend from rail_y up to left hook_y */
             dot_x = x1;
-            dot_y = rail_y - (pos - vert_len_right - horiz_len);
+            dot_y = rail_y - (pos - vert_len - horiz_len);
         }
-        
-        if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0) && dot_x < box_x + box_w/2) {
+
+        /* Suppress dot on the slave-side if sync/slave is in error */
+        if ((strcmp(sync_status, "ERROR") == 0 || strcmp(slave_status, "ERROR") == 0)
+                && dot_x < box_x + box_w / 2) {
             dot_x = -1;
         }
     }
 
     if (dot_x != -1) {
-        if (dot_x < box_x || dot_x >= box_x + box_w || dot_y != rail_y) {
-            tb_set_cell(dot_x, dot_y, 0x25C6, col | TB_BOLD, th->bg); /* ◆ */
+        /* Draw the dot everywhere EXCEPT inside the sync-info box rectangle */
+        int inside_box = (dot_x >= box_x && dot_x < box_x + box_w &&
+                          dot_y >= box_y && dot_y < box_y + box_h);
+        if (!inside_box) {
+            tb_set_cell(dot_x, dot_y, 0x25C6, col | TB_BOLD, th->bg);
         }
     }
 }
@@ -819,7 +826,7 @@ void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     int left_hook_x  = x + 7;
     int right_hook_x = x + w - 8;
 
-    draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w, 
+    draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w,
                               1, state.m_m_status, state.m_sync, state.m_s_status, th, anim_tick % 60);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.m_chk);
@@ -842,15 +849,12 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
 
     char buf[MAX_VAL];
 
-    /* Show sent payload (what master wrote this cycle) */
     format_shortened_left(buf, sizeof(buf), "Sent : ", state.r_sent, box_w - 4);
     tb_print_fixed(box_x + 2, box_y + 1, th->skip, th->bg, buf, box_w - 4);
 
-    /* Show received payload (what slave echoed back) – colour signals match/mismatch */
     int payload_match = (strcmp(state.r_sent, state.r_recv) == 0 &&
                          strcmp(state.r_sent, "(none)") != 0);
     uint16_t recv_col = payload_match ? th->ok : th->warn;
-    /* If slave is fully down, show in err colour */
     if (strcmp(state.r_s_status, "ERROR") == 0 ||
         strcmp(state.r_recv, "(no data)") == 0)
         recv_col = th->err;
@@ -862,7 +866,7 @@ void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
     int left_hook_x  = x + 7;
     int right_hook_x = x + w - 8;
 
-    draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w, 
+    draw_continuous_sync_path(left_hook_x, right_hook_x, hook_y, box_y, box_h, box_x, box_w,
                               -1, state.r_m_status, state.r_sync, state.r_s_status, th, anim_tick % 60);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.r_chk);
