@@ -1,3 +1,6 @@
+/*
+ * syncmon.c  ─  Nextcloud HA Cluster Monitor  [new-gui branch]
+ */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-result"
 #define TB_IMPL
@@ -36,6 +39,7 @@
 #define SYM_MASTER  "\u2605"
 #define SYM_SLAVE   "\u2606"
 #define SYM_HIST    "\u29D7"
+#define SYM_ARROW_R "\u27A4"
 
 static const char* SPIN_BRAILLE[] = {"⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"};
 static const char* SPIN_DOTS[]    = {"⣾","⣽","⣻","⢿","⡿","⣟","⣯","⣷","⣾","⣽"};
@@ -346,7 +350,7 @@ void load_state() {
     compute_ai_analysis();
 }
 
-/* drawing */
+/* drawing primitives */
 int tb_print_custom(int x, int y, uint16_t fg, uint16_t bg, const char *str) {
     while (*str) {
         uint32_t u;
@@ -428,6 +432,30 @@ void draw_box(int x, int y, int w, int h, uint16_t fg, const char* title, Theme*
         tb_set_cell(tx+3+tl+1, y, 0x25C8, th->accent, th->bg);
         tb_set_cell(tx+3+tl+2, y, ' ', th->bg, th->bg);
     }
+}
+
+void draw_corner_title_box(int x, int y, int w, int h,
+                           const char* left_title,
+                           const char* center_title,
+                           const char* right_title,
+                           uint16_t fg,
+                           Theme* th)
+{
+    draw_box(x, y, w, h, fg, NULL, th);
+
+    int ll = (int)strlen(left_title);
+    int cl = (int)strlen(center_title);
+    int rl = (int)strlen(right_title);
+
+    int cx = x + (w - cl - 4) / 2;
+    if (cx < x + ll + 4) cx = x + ll + 4;
+
+    int rx = x + w - rl - 2;
+    if (rx < cx + cl + 4) rx = cx + cl + 4;
+
+    tb_print_custom(x + 1, y, th->accent, th->bg, left_title);
+    tb_print_custom(cx,    y, th->hdr_fg | TB_BOLD, th->bg, center_title);
+    tb_print_custom(rx,    y, th->accent, th->bg, right_title);
 }
 
 void draw_header_box(int x, int y, int w, int h, Theme* th) {
@@ -562,12 +590,21 @@ void draw_theme_menu(Theme* th) {
 
 void draw_node_panel(int x, int y, int w, int h,
                      const char* title,
+                     const char* host,
                      const char* ping_status,
                      const char* ping,
                      const char* check,
                      const char* chk_ts,
                      Theme* th) {
-    draw_box(x, y, w, h, th->box2, title, th);
+                     
+    char full_title[256];
+    if (host && host[0] != '\0' && strcmp(host, "N/A") != 0) {
+        snprintf(full_title, sizeof(full_title), "%s : %s", title, host);
+    } else {
+        snprintf(full_title, sizeof(full_title), "%s", title);
+    }
+                     
+    draw_box(x, y, w, h, th->box2, full_title, th);
 
     int bar_w = 10;
     int label_x = x + 2;
@@ -593,106 +630,153 @@ void draw_node_panel(int x, int y, int w, int h,
     char buf[MAX_VAL];
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, chk_ts);
     tb_print_fixed(label_x, y+3, th->skip, th->bg, buf, w-4);
-
-    (void)h;
 }
 
-void draw_anim_track(int x1, int x2, int y, int dir, const char* status, Theme* th, int tick) {
-    if (x2 <= x1) return;
-    uint16_t col = get_status_fg(status, th);
-    int len = x2 - x1 + 1;
-    for (int i = 0; i < len; i++) tb_set_cell(x1+i, y, 0x2500, th->skip, th->bg);
+void draw_status_line_lr(int x, int y, int w,
+                         const char* left_label,
+                         const char* left_status,
+                         const char* mid_label,
+                         const char* mid_status,
+                         const char* right_status,
+                         const char* right_label,
+                         Theme* th)
+{
+    int left_x  = x + 2;
+    int mid_x   = x + (w / 2) - 10;
+    int right_x = x + w - 26;
 
+    tb_print_custom(left_x, y, th->accent, th->bg, left_label);
+    tb_print_custom(left_x + 10, y, th->fg, th->bg, ":");
+    draw_badge(left_x + 12, y, left_status, th);
+
+    tb_print_custom(mid_x, y, th->accent, th->bg, mid_label);
+    tb_print_custom(mid_x + 7, y, th->fg, th->bg, ":");
+    draw_badge(mid_x + 9, y, mid_status, th);
+
+    draw_badge(right_x, y, right_status, th);
+    tb_print_custom(right_x + 10, y, th->fg, th->bg, ":");
+    tb_print_custom(right_x + 12, y, th->accent, th->bg, right_label);
+}
+
+void draw_endpoint_markers(int x1, int x2, int y, Theme* th)
+{
+    tb_set_cell(x1, y, 0x2514, th->skip, th->bg); /* └ */
+    tb_set_cell(x1, y-1, 0x2502, th->skip, th->bg); /* │ */
+    tb_set_cell(x2, y, 0x2518, th->skip, th->bg); /* ┘ */
+    tb_set_cell(x2, y-1, 0x2502, th->skip, th->bg); /* │ */
+}
+
+void draw_sync_rail(int x1, int x2, int y, int dir, const char* status, Theme* th, int tick)
+{
+    uint16_t col = get_status_fg(status, th);
+    if (x2 <= x1) return;
+
+    for (int x = x1; x <= x2; x++) tb_set_cell(x, y, 0x2500, th->skip, th->bg);
+
+    int len = x2 - x1 + 1;
     int pos = tick % len;
+
     if (dir > 0) {
-        tb_set_cell(x2, y, 0x25B6, col|TB_BOLD, th->bg);
-        tb_set_cell(x1 + pos, y, 0x25C6, col|TB_BOLD, th->bg);
+        tb_set_cell(x2, y, 0x25B6, col | TB_BOLD, th->bg);               /* ▶ */
+        tb_set_cell(x1 + pos, y, 0x25C6, col | TB_BOLD, th->bg);         /* ◆ */
     } else {
-        tb_set_cell(x1, y, 0x25C0, col|TB_BOLD, th->bg);
-        tb_set_cell(x2 - pos, y, 0x25C6, col|TB_BOLD, th->bg);
+        tb_set_cell(x1, y, 0x25C0, col | TB_BOLD, th->bg);               /* ◀ */
+        tb_set_cell(x2 - pos, y, 0x25C6, col | TB_BOLD, th->bg);         /* ◆ */
     }
 }
 
-void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th) {
-    char title[256];
-    snprintf(title, sizeof(title), "%s  MariaDB  %s", state.m_m_ep, state.m_s_ep);
-    draw_box(x, y, w, h, th->box2, title, th);
+void draw_mariadb_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
+{
+    draw_corner_title_box(
+        x, y, w, h,
+        state.m_m_ep,
+        "◈ MariaDB ◈",
+        state.m_s_ep,
+        th->box2,
+        th
+    );
 
-    int half = w / 2;
-    int left_x = x + 2;
-    int right_x = x + half + 2;
-    int bar_w = 14;
+    draw_status_line_lr(
+        x, y+1, w,
+        "Master", state.m_m_status,
+        "Sync",   state.m_sync,
+        state.m_s_status, "Slave",
+        th
+    );
 
-    tb_print_custom(left_x, y+1, th->accent, th->bg, SYM_MASTER " Master:");
-    draw_badge(left_x+11, y+1, state.m_m_status, th);
-    draw_glow_bar(left_x+21, y+1, state.m_m_status, th, bar_w);
+    int box_w = 34;
+    int box_h = 4;
+    int box_x = x + (w - box_w) / 2;
+    int box_y = y + 3;
 
-    tb_print_custom(right_x, y+1, th->accent, th->bg, SYM_SLAVE " Slave :");
-    draw_badge(right_x+11, y+1, state.m_s_status, th);
-    draw_glow_bar(right_x+21, y+1, state.m_s_status, th, bar_w);
-
-    tb_print_custom(left_x, y+2, th->accent, th->bg, SYM_LINK " Sync  :");
-    draw_badge(left_x+11, y+2, state.m_sync, th);
-    draw_glow_bar(left_x+21, y+2, state.m_sync, th, w - 26);
-
-    int sbw = 34;
-    int sbx = x + (w - sbw) / 2;
-    int sby = y + 4;
-
-    draw_anim_track(x+4, sbx-3, y+3,  1, state.m_sync, th, anim_tick % 16);
-    draw_anim_track(sbx+sbw+2, x+w-5, y+3, 1, state.m_sync, th, (anim_tick+8) % 16);
-
-    draw_box(sbx, sby, sbw, 4, th->box1, NULL, th);
+    draw_box(box_x, box_y, box_w, box_h, th->box1, NULL, th);
 
     char buf[MAX_VAL];
-    format_shortened_left(buf, sizeof(buf), "M-GTID: ", state.m_m_gtid, sbw-4);
-    tb_print_fixed(sbx+2, sby+1, th->skip, th->bg, buf, sbw-4);
+    format_shortened_left(buf, sizeof(buf), "M-GTID: ", state.m_m_gtid, box_w - 4);
+    tb_print_fixed(box_x + 2, box_y + 1, th->skip, th->bg, buf, box_w - 4);
 
-    format_shortened_left(buf, sizeof(buf), "S-GTID: ", state.m_s_gtid, sbw-4);
-    tb_print_fixed(sbx+2, sby+2, th->skip, th->bg, buf, sbw-4);
+    format_shortened_left(buf, sizeof(buf), "S-GTID: ", state.m_s_gtid, box_w - 4);
+    tb_print_fixed(box_x + 2, box_y + 2, th->skip, th->bg, buf, box_w - 4);
+
+    int rail_y = y + 5;
+    int left_hook_x  = x + 2;
+    int right_hook_x = x + w - 3;
+
+    draw_endpoint_markers(left_hook_x, right_hook_x, rail_y, th);
+    draw_sync_rail(left_hook_x + 1, box_x - 2, rail_y,  1, state.m_sync, th, anim_tick % 40);
+    draw_sync_rail(box_x + box_w + 1, right_hook_x - 1, rail_y, 1, state.m_sync, th, (anim_tick + 11) % 40);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.m_chk);
-    tb_print_fixed(x+2, y+h-2, th->skip, th->bg, buf, w-4);
+    tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
 }
 
-void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th) {
-    char title[256];
-    snprintf(title, sizeof(title), "%s  Redis  %s", state.r_m_ep, state.r_s_ep);
-    draw_box(x, y, w, h, th->box2, title, th);
+void draw_redis_panel(int x, int y, int w, int h, int anim_tick, Theme* th)
+{
+    /* Redis: Slave on Left, Master on Right */
+    draw_corner_title_box(
+        x, y, w, h,
+        state.r_s_ep,
+        "◈ Redis ◈",
+        state.r_m_ep,
+        th->box2,
+        th
+    );
 
-    int half = w / 2;
-    int left_x = x + 2;
-    int right_x = x + half + 2;
-    int bar_w = 14;
+    draw_status_line_lr(
+        x, y+1, w,
+        "Slave",  state.r_s_status,
+        "Repl",   state.r_sync,
+        state.r_m_status, "Master",
+        th
+    );
 
-    tb_print_custom(left_x, y+1, th->accent, th->bg, SYM_MASTER " Master:");
-    draw_badge(left_x+11, y+1, state.r_m_status, th);
-    draw_glow_bar(left_x+21, y+1, state.r_m_status, th, bar_w);
+    int box_w = 42;
+    int box_h = 4;
+    int box_x = x + (w - box_w) / 2;
+    int box_y = y + 3;
 
-    tb_print_custom(right_x, y+1, th->accent, th->bg, SYM_SLAVE " Slave :");
-    draw_badge(right_x+11, y+1, state.r_s_status, th);
-    draw_glow_bar(right_x+21, y+1, state.r_s_status, th, bar_w);
-
-    tb_print_custom(left_x, y+2, th->accent, th->bg, "Repl  :");
-    draw_badge(left_x+11, y+2, state.r_sync, th);
-    draw_glow_bar(left_x+21, y+2, state.r_sync, th, w - 26);
-
-    int sbw = 42;
-    int sbx = x + (w - sbw) / 2;
-    int sby = y + 4;
-
-    draw_anim_track(x+4, sbx-3, y+3, -1, state.r_sync, th, anim_tick % 16);
-    draw_anim_track(sbx+sbw+2, x+w-5, y+3, -1, state.r_sync, th, (anim_tick+8) % 16);
-
-    draw_box(sbx, sby, sbw, 4, th->box1, NULL, th);
+    draw_box(box_x, box_y, box_w, box_h, th->box1, NULL, th);
 
     char buf[MAX_VAL];
-    format_shortened_left(buf, sizeof(buf), "Master sent : ", state.r_det, sbw-4);
-    tb_print_fixed(sbx+2, sby+1, th->skip, th->bg, buf, sbw-4);
-    tb_print_fixed(sbx+2, sby+2, th->skip, th->bg, "Slave recv  : <placeholder - daemon not wired yet>", sbw-4);
+    format_shortened_left(buf, sizeof(buf), "Master sent : ", state.r_det, box_w - 4);
+    tb_print_fixed(box_x + 2, box_y + 1, th->skip, th->bg, buf, box_w - 4);
+
+    tb_print_fixed(box_x + 2, box_y + 2, th->skip, th->bg,
+                   "Slave recv  : <placeholder - daemon not wired yet>",
+                   box_w - 4);
+
+    int rail_y = y + 5;
+    int left_hook_x  = x + 2;
+    int right_hook_x = x + w - 3;
+
+    draw_endpoint_markers(left_hook_x, right_hook_x, rail_y, th);
+    
+    /* Animation travels from Master (Right) to Slave (Left) */
+    draw_sync_rail(left_hook_x + 1, box_x - 2, rail_y, -1, state.r_sync, th, anim_tick % 40);
+    draw_sync_rail(box_x + box_w + 1, right_hook_x - 1, rail_y, -1, state.r_sync, th, (anim_tick + 11) % 40);
 
     snprintf(buf, sizeof(buf), "%s Checked: %s", SYM_CLOCK, state.r_chk);
-    tb_print_fixed(x+2, y+h-2, th->skip, th->bg, buf, w-4);
+    tb_print_fixed(x + 2, y + h - 2, th->skip, th->bg, buf, w - 4);
 }
 
 void draw_ui(int anim_tick) {
@@ -742,18 +826,14 @@ void draw_ui(int anim_tick) {
 
     y += ov_h + 1;
 
-    snprintf(buf, sizeof(buf), "Loadbalancer: %s", state.lb_host);
-    draw_node_panel(bx, y, bw, 5, buf, state.lb_ping_status, state.lb_ping, state.lb_check, state.lb_chk, th);
+    draw_node_panel(bx, y, bw, 5, SYM_LB " Loadbalancer", state.lb_host, state.lb_ping_status, state.lb_ping, state.lb_check, state.lb_chk, th);
     y += 6;
 
     int half = bw / 2;
     int half2 = bw - half;
 
-    snprintf(buf, sizeof(buf), "Nextcloud 1: %s", state.nc1_host);
-    draw_node_panel(bx, y, half, 5, buf, state.nc1_ping_status, state.nc1_ping, state.nc1_check, state.nc1_chk, th);
-
-    snprintf(buf, sizeof(buf), "Nextcloud 2: %s", state.nc2_host);
-    draw_node_panel(bx + half, y, half2, 5, buf, state.nc2_ping_status, state.nc2_ping, state.nc2_check, state.nc2_chk, th);
+    draw_node_panel(bx, y, half, 5, SYM_NC " Nextcloud 1", state.nc1_host, state.nc1_ping_status, state.nc1_ping, state.nc1_check, state.nc1_chk, th);
+    draw_node_panel(bx + half, y, half2, 5, SYM_NC " Nextcloud 2", state.nc2_host, state.nc2_ping_status, state.nc2_ping, state.nc2_check, state.nc2_chk, th);
     y += 6;
 
     draw_mariadb_panel(bx, y, bw, 9, anim_tick, th);
@@ -762,11 +842,8 @@ void draw_ui(int anim_tick) {
     draw_redis_panel(bx, y, bw, 9, anim_tick, th);
     y += 10;
 
-    snprintf(buf, sizeof(buf), "NFS: %s", state.nfs_host);
-    draw_node_panel(bx, y, half, 5, buf, state.nfs_ping_status, state.nfs_ping, state.nfs_check, state.nfs_chk, th);
-
-    snprintf(buf, sizeof(buf), "DNS: %s", state.dns_host);
-    draw_node_panel(bx + half, y, half2, 5, buf, state.dns_ping_status, state.dns_ping, state.dns_check, state.dns_chk, th);
+    draw_node_panel(bx, y, half, 5, SYM_NFS " NFS", state.nfs_host, state.nfs_ping_status, state.nfs_ping, state.nfs_check, state.nfs_chk, th);
+    draw_node_panel(bx + half, y, half2, 5, SYM_DNS " DNS", state.dns_host, state.dns_ping_status, state.dns_ping, state.dns_check, state.dns_chk, th);
     y += 6;
 
     draw_box(bx, y, bw, 10, th->box1, "History", th);
