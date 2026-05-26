@@ -46,6 +46,10 @@ typedef struct {
     char lb_check_url[512];
     char nc1_check_url[512];
     char nc2_check_url[512];
+
+    /* Configurable check parameters */
+    char dns_check_domain[256]; /* domain to resolve via dig; default: cluster.local */
+    char nfs_check_export[256]; /* export path prefix to grep for; default: "" (any) */
 } Config;
 
 void init_config(Config *cfg) {
@@ -61,6 +65,7 @@ void init_config(Config *cfg) {
     snprintf(cfg->mysql_master_port, sizeof(cfg->mysql_master_port), "3306");
     snprintf(cfg->mysql_slave_host,  sizeof(cfg->mysql_slave_host),  "127.0.0.2");
     snprintf(cfg->mysql_slave_port,  sizeof(cfg->mysql_slave_port),  "3306");
+    snprintf(cfg->mysql_user,        sizeof(cfg->mysql_user),        "syncmon");
     snprintf(cfg->redis_master_host, sizeof(cfg->redis_master_host), "127.0.0.1");
     snprintf(cfg->redis_master_port, sizeof(cfg->redis_master_port), "6379");
     snprintf(cfg->redis_slave_host,  sizeof(cfg->redis_slave_host),  "127.0.0.2");
@@ -73,6 +78,8 @@ void init_config(Config *cfg) {
     cfg->lb_check_url[0]  = '\0';
     cfg->nc1_check_url[0] = '\0';
     cfg->nc2_check_url[0] = '\0';
+    snprintf(cfg->dns_check_domain, sizeof(cfg->dns_check_domain), "cluster.local");
+    cfg->nfs_check_export[0] = '\0';
 }
 
 void trim_newline(char *str) { str[strcspn(str, "\r\n")] = 0; }
@@ -131,6 +138,8 @@ void load_config(const char *filepath, Config *cfg) {
             else if (strcmp(key,"LB_CHECK_URL")==0)             snprintf(cfg->lb_check_url,sizeof(cfg->lb_check_url),"%s",val);
             else if (strcmp(key,"NC1_CHECK_URL")==0)            snprintf(cfg->nc1_check_url,sizeof(cfg->nc1_check_url),"%s",val);
             else if (strcmp(key,"NC2_CHECK_URL")==0)            snprintf(cfg->nc2_check_url,sizeof(cfg->nc2_check_url),"%s",val);
+            else if (strcmp(key,"DNS_CHECK_DOMAIN")==0)         snprintf(cfg->dns_check_domain,sizeof(cfg->dns_check_domain),"%s",val);
+            else if (strcmp(key,"NFS_CHECK_EXPORT")==0)         snprintf(cfg->nfs_check_export,sizeof(cfg->nfs_check_export),"%s",val);
         }
     }
     fclose(f);
@@ -198,11 +207,11 @@ void http_check(const char *url, char *result_out, size_t result_sz) {
     snprintf(result_out, result_sz, "%s", buf);
 }
 
-void dns_check(const char *nameserver, char *result_out, size_t result_sz) {
+void dns_check(const char *nameserver, const char *domain, char *result_out, size_t result_sz) {
     char cmd[512];
     snprintf(cmd, sizeof(cmd),
-             "dig @%s +short +time=2 +tries=1 cluster.local 2>/dev/null | head -1",
-             nameserver);
+             "dig @%s +short +time=2 +tries=1 %s 2>/dev/null | head -1",
+             nameserver, domain);
     FILE *fp = popen(cmd, "r");
     char buf[128] = {0};
     if (fp) { (void)fgets(buf, sizeof(buf), fp); pclose(fp); }
@@ -213,10 +222,15 @@ void dns_check(const char *nameserver, char *result_out, size_t result_sz) {
         snprintf(result_out, result_sz, "ERROR query timeout / NXDOMAIN");
 }
 
-void nfs_check(const char *host, char *result_out, size_t result_sz) {
+void nfs_check(const char *host, const char *export_filter, char *result_out, size_t result_sz) {
     char cmd[512];
-    snprintf(cmd, sizeof(cmd),
-             "showmount -e %s --no-headers 2>/dev/null | head -1", host);
+    if (export_filter && strlen(export_filter) > 0)
+        snprintf(cmd, sizeof(cmd),
+                 "showmount -e %s --no-headers 2>/dev/null | grep '%s' | head -1",
+                 host, export_filter);
+    else
+        snprintf(cmd, sizeof(cmd),
+                 "showmount -e %s --no-headers 2>/dev/null | head -1", host);
     FILE *fp = popen(cmd, "r");
     char buf[128] = {0};
     if (fp) { (void)fgets(buf, sizeof(buf), fp); pclose(fp); }
@@ -448,7 +462,7 @@ void run_checks(Config *cfg) {
     now_str(lb_chk, sizeof(lb_chk));
 
     ping_host(cfg->dns_host, dns_ping_st, dns_ping);
-    dns_check(cfg->dns_host, dns_check_res, sizeof(dns_check_res));
+    dns_check(cfg->dns_host, cfg->dns_check_domain, dns_check_res, sizeof(dns_check_res));
     now_str(dns_chk, sizeof(dns_chk));
 
     ping_host(cfg->nc1_host, nc1_ping_st, nc1_ping);
@@ -470,7 +484,7 @@ void run_checks(Config *cfg) {
     now_str(nc2_chk, sizeof(nc2_chk));
 
     ping_host(cfg->nfs_host, nfs_ping_st, nfs_ping);
-    nfs_check(cfg->nfs_host, nfs_check_res, sizeof(nfs_check_res));
+    nfs_check(cfg->nfs_host, cfg->nfs_check_export, nfs_check_res, sizeof(nfs_check_res));
     now_str(nfs_chk, sizeof(nfs_chk));
 
     char overall[16];
