@@ -373,7 +373,6 @@ void run_checks(Config *cfg) {
 
     if (cfg->enable_mysql_check) {
         char cmd[MAX_BUFFER], pass_opt[300]={0};
-        char auth_args[128] = "";
         if (strlen(cfg->mysql_password)>0) {
             snprintf(pass_opt,sizeof(pass_opt),"-p'%s'",cfg->mysql_password);
         }
@@ -855,9 +854,9 @@ void run_test_mode(const char* state_file) {
     const char *overall;
     const char *msg;
     if (strcmp(mysql_master_st,"OK")==0 && strcmp(mysql_slave_st,"OK")==0 &&
-        strcmp(mysql_sync_status,  "OK")==0 &&
+        strcmp(mysql_sync_st,  "OK")==0 &&
         strcmp(redis_master_st,"OK")==0 && strcmp(redis_slave_st, "OK")==0 &&
-        strcmp(redis_rep_status,   "OK")==0) {
+        strcmp(redis_rep_st,   "OK")==0) {
         /* Even in "all OK" state, elevated HTTP codes downgrade overall to WARN */
         if (lb_http != 200 || nc1_http != 200 || nc2_http != 200)
             { overall = "WARN"; msg = "Transient HTTP anomaly detected"; }
