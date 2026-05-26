@@ -49,6 +49,7 @@ typedef struct {
 
     /* Configurable check parameters */
     char dns_check_domain[256]; /* domain to resolve via dig; default: cluster.local */
+    char dns_lookup_adr[256];   /* address to check if DNS resolves names; default: www.google.de */
     char nfs_check_export[256]; /* export path prefix to grep for; default: "" (any) */
 } Config;
 
@@ -79,6 +80,7 @@ void init_config(Config *cfg) {
     cfg->nc1_check_url[0] = '\0';
     cfg->nc2_check_url[0] = '\0';
     snprintf(cfg->dns_check_domain, sizeof(cfg->dns_check_domain), "cluster.local");
+    snprintf(cfg->dns_lookup_adr,   sizeof(cfg->dns_lookup_adr),   "www.google.de");
     cfg->nfs_check_export[0] = '\0';
 }
 
@@ -139,6 +141,7 @@ void load_config(const char *filepath, Config *cfg) {
             else if (strcmp(key,"NC1_CHECK_URL")==0)            snprintf(cfg->nc1_check_url,sizeof(cfg->nc1_check_url),"%s",val);
             else if (strcmp(key,"NC2_CHECK_URL")==0)            snprintf(cfg->nc2_check_url,sizeof(cfg->nc2_check_url),"%s",val);
             else if (strcmp(key,"DNS_CHECK_DOMAIN")==0)         snprintf(cfg->dns_check_domain,sizeof(cfg->dns_check_domain),"%s",val);
+            else if (strcmp(key,"DNS_LOOKUP_ADR")==0)           snprintf(cfg->dns_lookup_adr,sizeof(cfg->dns_lookup_adr),"%s",val);
             else if (strcmp(key,"NFS_CHECK_EXPORT")==0)         snprintf(cfg->nfs_check_export,sizeof(cfg->nfs_check_export),"%s",val);
         }
     }
@@ -176,7 +179,10 @@ void ping_host(const char *host, char *status_out, char *detail_out) {
     snprintf(cmd, sizeof(cmd), "ping -c1 -W2 %s 2>/dev/null%s", host, awk_frag);
     FILE *fp = popen(cmd, "r");
     char buf[64] = {0};
-    if (fp) { (void)fgets(buf, sizeof(buf), fp); pclose(fp); }
+    if (fp) {
+        if (!fgets(buf, sizeof(buf), fp)) buf[0] = '\0';
+        pclose(fp);
+    }
     buf[strcspn(buf, "\r\n")] = 0;
     if (strlen(buf) == 0) {
         snprintf(status_out, 16, "ERROR");
@@ -201,20 +207,25 @@ void http_check(const char *url, char *result_out, size_t result_sz) {
     FILE *fp = popen(cmd, "r");
     if (!fp) { snprintf(result_out, result_sz, "curl error"); return; }
     char buf[256] = {0};
-    (void)fgets(buf, sizeof(buf), fp);
+    if (!fgets(buf, sizeof(buf), fp)) buf[0] = '\0';
     pclose(fp);
     buf[strcspn(buf, "\r\n")] = 0;
     snprintf(result_out, result_sz, "%s", buf);
 }
 
-void dns_check(const char *nameserver, const char *domain, char *result_out, size_t result_sz) {
+void dns_check(const char *nameserver, const char *domain, const char *lookup_adr, char *result_out, size_t result_sz) {
     char cmd[512];
+    /* Use the lookup_adr parameter instead of hardcoded cluster.local or single parameter */
+    /* Wait for result on lookup_adr over nameserver */
     snprintf(cmd, sizeof(cmd),
              "dig @%s +short +time=2 +tries=1 %s 2>/dev/null | head -1",
-             nameserver, domain);
+             nameserver, lookup_adr);
     FILE *fp = popen(cmd, "r");
     char buf[128] = {0};
-    if (fp) { (void)fgets(buf, sizeof(buf), fp); pclose(fp); }
+    if (fp) {
+        if (!fgets(buf, sizeof(buf), fp)) buf[0] = '\0';
+        pclose(fp);
+    }
     buf[strcspn(buf, "\r\n")] = 0;
     if (strlen(buf) > 0)
         snprintf(result_out, result_sz, "resolv OK: %s", buf);
@@ -233,7 +244,10 @@ void nfs_check(const char *host, const char *export_filter, char *result_out, si
                  "showmount -e %s --no-headers 2>/dev/null | head -1", host);
     FILE *fp = popen(cmd, "r");
     char buf[128] = {0};
-    if (fp) { (void)fgets(buf, sizeof(buf), fp); pclose(fp); }
+    if (fp) {
+        if (!fgets(buf, sizeof(buf), fp)) buf[0] = '\0';
+        pclose(fp);
+    }
     buf[strcspn(buf, "\r\n")] = 0;
     if (strlen(buf) > 0)
         snprintf(result_out, result_sz, "exports: %s", buf);
@@ -359,8 +373,10 @@ void run_checks(Config *cfg) {
 
     if (cfg->enable_mysql_check) {
         char cmd[MAX_BUFFER], pass_opt[300]={0};
-        if (strlen(cfg->mysql_password)>0)
+        char auth_args[128] = "";
+        if (strlen(cfg->mysql_password)>0) {
             snprintf(pass_opt,sizeof(pass_opt),"-p'%s'",cfg->mysql_password);
+        }
         char tmp[64];
         snprintf(cmd,sizeof(cmd),
                  "timeout 10 mysql -h %s -P %s -u %s %s -N -B -e 'SELECT 1;' 2>/dev/null",
@@ -391,7 +407,12 @@ void run_checks(Config *cfg) {
         char cmd[MAX_BUFFER], out[MAX_BUFFER];
         const char *pass=cfg->redis_password;
         char auth_args[128]="";
-        if (strlen(pass)>0) snprintf(auth_args,sizeof(auth_args),"-a %s",pass);
+        if (strlen(pass) > 0) {
+            snprintf(auth_args, sizeof(auth_args),
+                    "-a %.*s",
+                    (int)(sizeof(auth_args) - strlen("-a ") - 1),
+                    pass);
+        }
 
         char ts_now[64]; now_str(ts_now, sizeof(ts_now));
         g_redis_seq++;
@@ -413,7 +434,10 @@ void run_checks(Config *cfg) {
         strcpy(redis_slave_status, r_slave_ok ? "OK" : "ERROR");
 
         if (r_slave_ok && strlen(out) > 0) {
-            snprintf(redis_recv_payload, sizeof(redis_recv_payload), "%s", out);
+            snprintf(redis_recv_payload, sizeof(redis_recv_payload),
+                    "%.*s",
+                    (int)(sizeof(redis_recv_payload) - 1),
+                    out);
         } else {
             snprintf(redis_recv_payload, sizeof(redis_recv_payload), "(no data)");
         }
@@ -462,7 +486,7 @@ void run_checks(Config *cfg) {
     now_str(lb_chk, sizeof(lb_chk));
 
     ping_host(cfg->dns_host, dns_ping_st, dns_ping);
-    dns_check(cfg->dns_host, cfg->dns_check_domain, dns_check_res, sizeof(dns_check_res));
+    dns_check(cfg->dns_host, cfg->dns_check_domain, cfg->dns_lookup_adr, dns_check_res, sizeof(dns_check_res));
     now_str(dns_chk, sizeof(dns_chk));
 
     ping_host(cfg->nc1_host, nc1_ping_st, nc1_ping);
@@ -831,9 +855,9 @@ void run_test_mode(const char* state_file) {
     const char *overall;
     const char *msg;
     if (strcmp(mysql_master_st,"OK")==0 && strcmp(mysql_slave_st,"OK")==0 &&
-        strcmp(mysql_sync_st,  "OK")==0 &&
+        strcmp(mysql_sync_status,  "OK")==0 &&
         strcmp(redis_master_st,"OK")==0 && strcmp(redis_slave_st, "OK")==0 &&
-        strcmp(redis_rep_st,   "OK")==0) {
+        strcmp(redis_rep_status,   "OK")==0) {
         /* Even in "all OK" state, elevated HTTP codes downgrade overall to WARN */
         if (lb_http != 200 || nc1_http != 200 || nc2_http != 200)
             { overall = "WARN"; msg = "Transient HTTP anomaly detected"; }
